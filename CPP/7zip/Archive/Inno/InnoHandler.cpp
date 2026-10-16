@@ -45,13 +45,16 @@ static const Byte kArcProps[] =
   kpidMethod,
   kpidSolid,
   kpidCommented,
-  kpidHeadersSize
+  kpidHeadersSize,
 };
 
 IMP_IInArchive_Props
 IMP_IInArchive_ArcProps
 
+// Hosts compile IInArchive methods as non-throwing, so no C++ exception may
+// escape Open() or Extract() into the 7-Zip process (function-try-blocks below).
 STDMETHODIMP CHandler::Open(IInStream* stream, const UInt64* /*maxCheckStartPosition*/, IArchiveOpenCallback* openArchiveCallback )
+try
 {
 	IArchiveOpenVolumeCallback* ovc=nullptr;
 	FILETIME ft = {};
@@ -80,6 +83,15 @@ STDMETHODIMP CHandler::Open(IInStream* stream, const UInt64* /*maxCheckStartPosi
 	}
 	return _archive.Open(stream, ft);
 }
+catch (const std::bad_alloc&)
+{
+	return E_OUTOFMEMORY;
+}
+catch (...)
+{
+	// 7-Zip offers every .exe to this handler before PE, so a parse failure only means "not Inno".
+	return S_FALSE;
+}
 
 STDMETHODIMP CHandler::Close()
 {
@@ -94,7 +106,7 @@ STDMETHODIMP CHandler::GetNumberOfItems(UInt32* numItems)
 
 STDMETHODIMP CHandler::GetProperty(UInt32 index, PROPID propID, PROPVARIANT* value)
 {
-	//TODO: complete property
+	//complete property
 	COM_TRY_BEGIN
 	NCOM::CPropVariant prop;
 	auto item = _archive.GetItem(index);
@@ -103,17 +115,14 @@ STDMETHODIMP CHandler::GetProperty(UInt32 index, PROPID propID, PROPVARIANT* val
 	case kpidPath:
 		prop = MultiByteToUnicodeString(item->GetPath().data());
 		break;
-	case kpidIsDir:
-		prop = false;
-		break;
 	case kpidSize:
 		prop = item->GetSize();
 		break;
-	case kpidAttrib:
-		prop = item->GetAttrib();
-		break;
 	case kpidMTime:
 		prop = item->GetModifiedTime();
+		break;
+	case kpidAttrib:
+		prop = item->GetAttrib();
 		break;
 	case kpidCommented:
 		prop = AString(item->GetComment().data());
@@ -132,8 +141,8 @@ STDMETHODIMP CHandler::GetProperty(UInt32 index, PROPID propID, PROPVARIANT* val
 	COM_TRY_END
 }
 
-STDMETHODIMP CHandler::Extract(const UInt32* indices, UInt32 numItems,
-	Int32 testMode, IArchiveExtractCallback* extractCallback)
+STDMETHODIMP CHandler::Extract(const UInt32* indices, UInt32 numItems, Int32 testMode, IArchiveExtractCallback* extractCallback)
+try
 {
 	if (numItems == 0)
 		return S_OK;
@@ -211,6 +220,8 @@ STDMETHODIMP CHandler::Extract(const UInt32* indices, UInt32 numItems,
 			case E_OUTOFMEMORY:
 				extractCallback->SetOperationResult(NExtract::NOperationResult::kUnavailable);
 				break;
+			case ERROR_INCORRECT_SIZE:
+			case ERROR_DATA_CHECKSUM_ERROR:
 			case E_FAIL:
 			default:
 				extractCallback->SetOperationResult(NExtract::NOperationResult::kDataError);
@@ -222,10 +233,22 @@ STDMETHODIMP CHandler::Extract(const UInt32* indices, UInt32 numItems,
 	}
 	return S_OK;
 }
+catch (const NotImplemented&)
+{
+	return E_NOTIMPL;
+}
+catch (const std::bad_alloc&)
+{
+	return E_OUTOFMEMORY;
+}
+catch (...)
+{
+	return E_FAIL;
+}
 
 STDMETHODIMP CHandler::GetArchiveProperty(PROPID propID, PROPVARIANT* value)
 {
-	//TODO: complete archive property
+	//complete archive property
 	COM_TRY_BEGIN
 	NCOM::CPropVariant prop;
 	switch (propID)
@@ -242,16 +265,8 @@ STDMETHODIMP CHandler::GetArchiveProperty(PROPID propID, PROPVARIANT* value)
 	case kpidHeadersSize:
 		prop = _archive.GetHeaderSize();
 		break;
-	case kpidPhySize:
-		//TODO:
-		break;
-	case kpidError:
-		break;
-	case kpidErrorFlags:
-		break;
-	case kpidWarningFlags:
-		break;
 	case kpidWarning:
+		prop = AString(("Check debug log at: " + _archive.GetLogPath()).c_str());
 		break;
 	default:
 		break;

@@ -66,7 +66,7 @@ public:
 	virtual std::string_view GetMethod() override { return _method; }
 	virtual std::string_view GetComment() override { return "Auto generated"; }
 	virtual FILETIME GetModifiedTime() override;
-	CEmbeddedItem() {};
+	CEmbeddedItem() = default;
 	CEmbeddedItem(std::string name, size_t size, std::string method, int64_t timestamp)
 		:_name(name), _size(size), _method(method), _timestamp(timestamp) {}
 private:

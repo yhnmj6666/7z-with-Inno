@@ -3,7 +3,7 @@
 #ifndef _MINIHEAD_HPP
 #define _MINIHEAD_HPP
 
-#include "../C/7zCrc.h"
+#include "../../../../../C/7zCrc.h"
 
 //#define NOMINMAX
 #define LZMA_API_STATIC

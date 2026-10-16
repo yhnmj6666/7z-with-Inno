@@ -67,6 +67,7 @@ class CInArchive {
 
 public:
 	static void InitializeLog(std::string& filename);
+	static std::string GetLogPath();
 	HRESULT Open(IInStream* inStream, FILETIME modifiedTime);
 
 	UInt32 GetDataOffset();

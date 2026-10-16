@@ -24,12 +24,19 @@
 //#include <boost/cstdint.hpp>
 
 #include "../liblzma/lzma.h"
-#ifdef _WIN64
-#pragma comment(lib,"U:/Projects/lib/7-zip/CPP/7zip/Archive/Inno/InnoExtract/liblzma/lib/liblzma_x64d.lib")
-#else
-#ifdef _WIN32
-#pragma comment(lib,"U:/Projects/lib/7-zip/CPP/7zip/Archive/Inno/InnoExtract/liblzma/lib/liblzma_x86d.lib")
-#endif
+// The projects add InnoExtract/liblzma/lib to the linker search path.
+#if defined(_WIN64)
+#  if defined(_DEBUG)
+#    pragma comment(lib, "liblzma_x64d.lib")
+#  else
+#    pragma comment(lib, "liblzma_x64.lib")
+#  endif
+#elif defined(_WIN32)
+#  if defined(_DEBUG)
+#    pragma comment(lib, "liblzma_x86d.lib")
+#  else
+#    pragma comment(lib, "liblzma_x86.lib")
+#  endif
 #endif
 
 //#include "../../../../../../C/LzmaDec.h"

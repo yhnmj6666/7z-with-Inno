@@ -111,6 +111,11 @@ void CInArchive::InitializeLog(std::string& filename)
 	logger::log_path = logPath;
 }
 
+std::string CInArchive::GetLogPath()
+{
+    return logger::log_path.has_value() ? logger::log_path.value().string() : std::string();
+}
+
 HRESULT CInArchive::Open(IInStream* stream, FILETIME modifiedTime)
 {
 	_modifiedTime = modifiedTime;
@@ -272,12 +277,13 @@ HRESULT CInArchive::ExtractItem(UInt32 indice, bool testMode, InteropFileStreamP
 	delete[] p_buffer;
 	if (total_output != data_info.uncompressed_size)
 	{
-		//TODO: size not match
-		(void)total_output;
+		log_warning << "Extracted size mismatch for file " << file_info.destination << " expected: " << data_info.uncompressed_size << " actual: " << total_output;
+		return ERROR_INCORRECT_SIZE;
 	}
 	if (checksum != data_info.file.checksum)
 	{
-		//TODO: mismatched checksum
+		log_warning << "Checksum mismatch for file " << file_info.destination;
+		return ERROR_DATA_CHECKSUM_ERROR;
 	}
 	return S_OK;
 }
@@ -367,7 +373,7 @@ CEmbeddedFiles::CEmbeddedFiles(setup::info& info, bool hasCollision, FILETIME ti
 
 size_t CEmbeddedFiles::GetNumberOfItems() const
 {
-	//TODO: add more files
+	// add more files
 	size_t additionalItems = 1; // inno setup script
 	additionalItems += (_pinfo->header.license_text.empty() ? 0 : 1); // license file
 	additionalItems += _pinfo->languages.size(); // language files
@@ -1017,7 +1023,7 @@ size_t CEmbeddedFiles::GenerateLanguageFileContent(size_t langIndex, std::string
 #	define _OSSL2(s,n) if (!s.empty()) oss << n << "=" << s << "\n"
 #	define _OSSLN2(s,n) oss << n << "=" << s << "\n"
 	_OSSL(lang.language_name);
-	// TODO: use hex instead "${hex of language id}"
+	// use hex instead "${hex of language id}"?
 	_OSSLN(lang.language_id);
 	_OSSLN2(lang.codepage,"LanguageCodePage");
 	_OSSL2(lang.dialog_font,"DialogFontName");
@@ -1084,7 +1090,7 @@ CEmbeddedItem CEmbeddedFiles::GenerateWizardImageSmall(size_t imageIndex) const
 
 size_t CEmbeddedFiles::GenerateWizardImageSmallContent(size_t imageIndex, std::string& outData) const
 {
-	outData = _pinfo->wizard_images[imageIndex];
+	outData = _pinfo->wizard_images_small[imageIndex];
 	return outData.size();
 }
 

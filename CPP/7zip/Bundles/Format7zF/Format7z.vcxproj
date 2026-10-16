@@ -292,78 +292,52 @@
       <OutputFile>.\Debug/Format7z.bsc</OutputFile>
     </Bscmake>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <Link>
+      <!-- liblzma itself is selected with #pragma comment(lib) in Inno\InnoExtract\stream\lzma.cpp. -->
+      <AdditionalLibraryDirectories>..\..\Archive\Inno\InnoExtract\liblzma\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <None Include="..\..\..\..\Asm\x86\7zAsm.asm" />
     <CustomBuild Include="..\..\..\..\Asm\x86\7zCrcOpt.asm">
       <Command Condition="'$(Platform)'=='Win32'">ml.exe -c -Fo$(IntDir)%(Filename).obj %(FullPath)</Command>
       <Command Condition="'$(Platform)'=='x64'">ml64.exe -c -Fo$(IntDir)%(Filename).obj %(FullPath)</Command>
-      <Outputs Condition="'$(Platform)'=='Win32'">$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
-      <Outputs Condition="'$(Platform)'=='x64'">$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
+      <Outputs>$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
     </CustomBuild>
     <CustomBuild Include="..\..\..\..\Asm\x86\AesOpt.asm">
       <Command Condition="'$(Platform)'=='Win32'">ml.exe -c -WX -W3 -Fo$(IntDir)%(Filename).obj %(FullPath)</Command>
       <Command Condition="'$(Platform)'=='x64'">ml64.exe -c -WX -W3 -Fo$(IntDir)%(Filename).obj %(FullPath)</Command>
-      <Outputs Condition="'$(Platform)'=='Win32'">$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
-      <Outputs Condition="'$(Platform)'=='x64'">$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
+      <Outputs>$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
     </CustomBuild>
     <CustomBuild Include="..\..\..\..\Asm\x86\Sha1Opt.asm">
       <Command Condition="'$(Platform)'=='Win32'">ml.exe -c -Fo$(IntDir)%(Filename).obj %(FullPath)</Command>
       <Command Condition="'$(Platform)'=='x64'">ml64.exe -c -Fo$(IntDir)%(Filename).obj %(FullPath)</Command>
-      <Outputs Condition="'$(Platform)'=='Win32'">$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
-      <Outputs Condition="'$(Platform)'=='x64'">$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
+      <Outputs>$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
     </CustomBuild>
     <CustomBuild Include="..\..\..\..\Asm\x86\Sha256Opt.asm">
       <Command Condition="'$(Platform)'=='Win32'">ml.exe -c -Fo$(IntDir)%(Filename).obj %(FullPath)</Command>
       <Command Condition="'$(Platform)'=='x64'">ml64.exe -c -Fo$(IntDir)%(Filename).obj %(FullPath)</Command>
-      <Outputs Condition="'$(Platform)'=='Win32'">$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
-      <Outputs Condition="'$(Platform)'=='x64'">$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
+      <Outputs>$(IntDir)%(Filename).obj;%(Outputs)</Outputs>
     </CustomBuild>
     <None Include="..\..\Archive\Archive2.def" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\..\C\7zBuf2.c">
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-      </PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-      </PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-      </PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </PrecompiledHeader>
+      <PrecompiledHeader/>
     </ClCompile>
     <ClCompile Include="..\..\..\..\C\7zCrc.c">
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-      </PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-      </PrecompiledHeader>
+      <PrecompiledHeader/>
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">MaxSpeed</Optimization>
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Release|x64'">MaxSpeed</Optimization>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-      </PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="..\..\..\..\C\7zStream.c">
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-      </PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-      </PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-      </PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </PrecompiledHeader>
+      <PrecompiledHeader/>
     </ClCompile>
     <ClCompile Include="..\..\..\..\C\Aes.c">
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-      </PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-      </PrecompiledHeader>
+      <PrecompiledHeader/>
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">MaxSpeed</Optimization>
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Release|x64'">MaxSpeed</Optimization>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-      </PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-      </PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="..\..\..\..\C\Alloc.c">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
