@@ -1,0 +1,44 @@
+name: "Copilot Setup Steps"
+
+# Prepares the GitHub Copilot cloud agent environment (Ubuntu) for the Inno Setup plugin work.
+# Runs automatically when changed, and manually from the Actions tab. The agent only uses this
+# file when it is on the repository's default branch.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+      - .github/scripts/setup-inno-tools.sh
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+      - .github/scripts/setup-inno-tools.sh
+
+jobs:
+  # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+  copilot-setup-steps:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install packages (Wine, MinGW, innoextract 1.9, build tools)
+        run: bash .github/scripts/setup-inno-tools.sh packages
+
+      - name: Install 7-Zip (Linux 7zz, Windows 7z.exe under Wine)
+        run: bash .github/scripts/setup-inno-tools.sh sevenzip
+
+      - name: Install Inno Setup compilers 5.6.1 to 7.1.0 under Wine
+        run: bash .github/scripts/setup-inno-tools.sh iscc
+
+      - name: Clone reference sources (7-Zip, innoextract, Inno Setup)
+        run: bash .github/scripts/setup-inno-tools.sh sources
+
+      - name: Build innoextract master as a reference extractor
+        run: bash .github/scripts/setup-inno-tools.sh innoextract
+
+      - name: Smoke test (compile and list a tiny installer per compiler)
+        run: bash .github/scripts/setup-inno-tools.sh smoke

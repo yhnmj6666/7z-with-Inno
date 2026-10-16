@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Prepares the Ubuntu environment of the GitHub Copilot cloud agent for the Inno Setup plugin work.
+# Called step by step from .github/workflows/copilot-setup-steps.yml:
+#   setup-inno-tools.sh packages | sevenzip | iscc | sources | innoextract | smoke
+#
+# Installed tools (documented in .github/prompts/inno-plugin-refactor.prompt.md):
+#   iscc-<version>        Inno Setup command-line compilers running under Wine
+#   innoextract           innoextract 1.9 from Ubuntu
+#   innoextract-master    innoextract built from the pinned master commit below
+#   7zz                   7-Zip for Linux
+#   7z-win                Windows 7-Zip x64 under Wine; plugins go to $TOOLS/7zip-win64/Formats
+#   /opt/src/{7zip,innoextract,issrc}   reference source checkouts with full history and tags
+set -euo pipefail
+
+TOOLS=/opt/inno-tools
+SRC=/opt/src
+SEVENZIP_TAG=26.04
+INNOEXTRACT_COMMIT=6e9e34ed0876014fdb46e684103ef8c3605e382e
+
+export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
+export WINEDEBUG=-all
+export WINEDLLOVERRIDES="mscoree,mshtml="
+
+# label|url|extra installer arguments
+ISCC_VERSIONS=(
+  "5.6.1|https://files.jrsoftware.org/is/5/innosetup-5.6.1.exe|/DOWNLOADISCRYPT=1"
+  "5.6.1-unicode|https://files.jrsoftware.org/is/5/innosetup-5.6.1-unicode.exe|/DOWNLOADISCRYPT=1"
+  "6.0.5|https://github.com/jrsoftware/issrc/releases/download/is-6_0_5/innosetup-6.0.5.exe|"
+  "6.1.2|https://github.com/jrsoftware/issrc/releases/download/is-6_1_2/innosetup-6.1.2.exe|"
+  "6.2.2|https://github.com/jrsoftware/issrc/releases/download/is-6_2_2/innosetup-6.2.2.exe|"
+  "6.3.3|https://github.com/jrsoftware/issrc/releases/download/is-6_3_3/innosetup-6.3.3.exe|"
+  "6.4.3|https://github.com/jrsoftware/issrc/releases/download/is-6_4_3/innosetup-6.4.3.exe|"
+  "6.5.4|https://github.com/jrsoftware/issrc/releases/download/is-6_5_4/innosetup-6.5.4.exe|"
+  "6.6.1|https://github.com/jrsoftware/issrc/releases/download/is-6_6_1/innosetup-6.6.1.exe|"
+  "6.7.3|https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe|"
+  "7.0.2-x64|https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/innosetup-7.0.2-x64.exe|"
+  "7.1.0-x64|https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe|"
+  "7.1.0-x86|https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x86.exe|"
+)
+
+prepare_dirs() {
+  sudo mkdir -p "$TOOLS" "$SRC"
+  sudo chown "$(id -u):$(id -g)" "$TOOLS" "$SRC"
+}
+
+step_packages() {
+  sudo dpkg --add-architecture i386
+  sudo apt-get update -q
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+    wine wine64 wine32:i386 xvfb xauth \
+    innoextract \
+    cmake ninja-build g++ g++-mingw-w64 \
+    libboost-iostreams-dev libboost-filesystem-dev libboost-date-time-dev \
+    libboost-system-dev libboost-program-options-dev liblzma-dev zlib1g-dev libbz2-dev \
+    xz-utils
+  xvfb-run -a wineboot --init
+  wineserver -w
+}
+
+# Wrapper for programs running under Wine: arguments naming existing files or
+# directories (also ISCC /O<dir>) are converted to Windows paths.
+write_wine_wrapper() {
+  local name=$1 exe=$2
+  cat > "/tmp/$name" <<EOF
+#!/usr/bin/env bash
+export WINEPREFIX="\${WINEPREFIX:-\$HOME/.wine}" WINEDEBUG="\${WINEDEBUG:--all}"
+args=()
+for a in "\$@"; do
+  case "\$a" in
+    /O?*) d="\${a:2}"; if [ -d "\$d" ]; then a="/O\$(winepath -w "\$d")"; fi ;;
+    *) if [ -e "\$a" ]; then a="\$(winepath -w "\$a")"; fi ;;
+  esac
+  args+=("\$a")
+done
+exec wine '$exe' "\${args[@]}"
+EOF
+  sudo install -m 755 "/tmp/$name" "/usr/local/bin/$name"
+}
+
+step_sevenzip() {
+  prepare_dirs
+  local base="https://github.com/ip7z/7zip/releases/download/$SEVENZIP_TAG"
+  local ver="${SEVENZIP_TAG//./}"
+  curl -fsSL -o /tmp/7z-linux.tar.xz "$base/7z$ver-linux-x64.tar.xz"
+  mkdir -p "$TOOLS/7zip-linux"
+  tar -xJf /tmp/7z-linux.tar.xz -C "$TOOLS/7zip-linux"
+  sudo ln -sf "$TOOLS/7zip-linux/7zz" /usr/local/bin/7zz
+  curl -fsSL -o /tmp/7z-win64.exe "$base/7z$ver-x64.exe"
+  7zz x -y -o"$TOOLS/7zip-win64" /tmp/7z-win64.exe > /dev/null
+  mkdir -p "$TOOLS/7zip-win64/Formats"
+  write_wine_wrapper 7z-win "$(winepath -w "$TOOLS/7zip-win64/7z.exe")"
+  7zz i > /tmp/7zz-info.txt && sed -n '1,3p' /tmp/7zz-info.txt
+  7z-win i > /tmp/7zwin-info.txt && sed -n '1,6p' /tmp/7zwin-info.txt
+}
+
+step_iscc() {
+  prepare_dirs
+  local failed=()
+  for entry in "${ISCC_VERSIONS[@]}"; do
+    IFS='|' read -r label url extra <<< "$entry"
+    echo "::group::Inno Setup $label"
+    if curl -fsSL -o "/tmp/is-$label.exe" "$url" \
+      && xvfb-run -a wine "/tmp/is-$label.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS \
+           "/DIR=C:\\iscc\\$label" $extra \
+      && wineserver -w \
+      && [ -f "$WINEPREFIX/drive_c/iscc/$label/ISCC.exe" ]; then
+      write_wine_wrapper "iscc-$label" "C:\\iscc\\$label\\ISCC.exe"
+      echo "installed iscc-$label"
+    else
+      failed+=("$label")
+      echo "::warning::Inno Setup $label could not be installed"
+    fi
+    echo "::endgroup::"
+  done
+  if [ ${#failed[@]} -gt 0 ]; then
+    echo "::warning::Missing Inno Setup compilers: ${failed[*]}"
+  fi
+}
+
+step_sources() {
+  prepare_dirs
+  git clone -q https://github.com/ip7z/7zip "$SRC/7zip"
+  git clone -q https://github.com/dscharrer/innoextract "$SRC/innoextract"
+  git -C "$SRC/innoextract" checkout -q "$INNOEXTRACT_COMMIT"
+  git clone -q https://github.com/jrsoftware/issrc "$SRC/issrc"
+  git -C "$SRC/7zip" tag --list "$SEVENZIP_TAG"
+  git -C "$SRC/issrc" tag --list 'is-7_*' | tail -n 3
+}
+
+step_innoextract() {
+  cmake -S "$SRC/innoextract" -B /tmp/innoextract-build -G Ninja -DCMAKE_BUILD_TYPE=Release > /dev/null
+  cmake --build /tmp/innoextract-build > /dev/null
+  sudo install -m 755 /tmp/innoextract-build/innoextract /usr/local/bin/innoextract-master
+  innoextract --version | sed -n '1p'
+  innoextract-master --version | sed -n '1p'
+}
+
+# Compiles a one-file installer with every installed compiler and reports which reference
+# extractor can list it. Fails only if a compiler is missing or broken.
+step_smoke() {
+  local dir=/tmp/inno-smoke status=0
+  rm -rf "$dir" && mkdir -p "$dir"
+  echo hello > "$dir/hello.txt"
+  printf '%s\r\n' '[Setup]' 'AppName=Smoke' 'AppVersion=1.0' 'DefaultDirName={sd}\Smoke' \
+    'OutputDir=.' 'Uninstallable=no' '[Files]' 'Source: "hello.txt"; DestDir: "{app}"' > "$dir/smoke.iss"
+  for entry in "${ISCC_VERSIONS[@]}"; do
+    IFS='|' read -r label _ <<< "$entry"
+    local out="$dir/smoke-$label.exe" result
+    if ! command -v "iscc-$label" > /dev/null; then
+      echo "iscc-$label: MISSING"; status=1; continue
+    fi
+    if (cd "$dir" && "iscc-$label" /Q "/Fsmoke-$label" smoke.iss) && [ -f "$out" ]; then
+      result="compiled"
+      innoextract --list --silent "$out" > /dev/null 2>&1 && result+=", innoextract ok" || result+=", innoextract FAIL"
+      innoextract-master --list --silent "$out" > /dev/null 2>&1 && result+=", innoextract-master ok" || result+=", innoextract-master FAIL"
+    else
+      result="COMPILE FAILED"; status=1
+    fi
+    echo "iscc-$label: $result"
+  done
+  return $status
+}
+
+case "${1:-}" in
+  packages) step_packages ;;
+  sevenzip) step_sevenzip ;;
+  iscc) step_iscc ;;
+  sources) step_sources ;;
+  innoextract) step_innoextract ;;
+  smoke) step_smoke ;;
+  *) echo "usage: $0 packages|sevenzip|iscc|sources|innoextract|smoke" >&2; exit 2 ;;
+esac
