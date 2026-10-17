@@ -27,31 +27,43 @@ sys.path.insert(0, TESTS_DIR)
 import make_payload  # noqa: E402
 
 COMPILERS = ["5.6.1", "5.6.1-unicode", "6.0.5", "6.1.2", "6.2.2"]
-VARIANTS = [
-    "lzma-solid",
-    "lzma2-nonsolid",
-    "zip-solid",
-    "zip-nonsolid",
-    "bzip-solid",
-    "bzip-nonsolid",
-    "none",
-]
+# Variant -> compression method of its files, as kpidMethod names it.
+VARIANTS = {
+    "lzma-solid": "LZMA",
+    "lzma2-nonsolid": "LZMA2",
+    "zip-solid": "Deflate",
+    "zip-nonsolid": "Deflate",
+    "bzip-solid": "BZip2",
+    "bzip-nonsolid": "BZip2",
+    "none": "Copy",
+    "time-utc": "LZMA2",
+    "time-local": "LZMA2",
+}
+# Timestamp variants -> True if they store times in UTC (TimeStampsInUTC=yes).
+TIME_VARIANTS = {"time-utc": True, "time-local": False}
+# On Linux, the client lists the timestamp variants in this time zone.
+TIME_ZONE = "America/New_York"
+# Payload files that are x86 executables. Inno Setup 5.3.9 and later store them
+# with this call instruction filter when they are compressed.
+EXECUTABLES = {"bin/calls.exe"}
+FILTER = "IF5309"
 TIMEOUT = 600
 
 # Characters that Windows does not allow in file names. The test client and
 # 7-Zip on Windows replace them with '_' in each path component.
 INCORRECT_CHARS = re.compile(r'[\x00-\x1f:*?<>|"]')
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+# Extra items whose number depends on the compiler (wizard images).
+OPTIONAL_EXTRA = re.compile(r"embedded\\WizardImage(Small)?\d+\.bmp$")
+# Inno Setup [Files] parameters: Name: "value" or Name: value.
+PARAMETER = re.compile(r'(\w+)\s*:\s*(?:"([^"]*)"|([^;]*))')
+# The client's item results for damaged data.
+ERROR_RESULTS = {"crc_error", "data_error", "unexpected_end"}
 
 
 def fs_components(archive_path):
     """Archive path ('\\'-separated) -> output path components."""
     return [INCORRECT_CHARS.sub("_", c) for c in archive_path.split("\\") if c]
-
-
-def is_generated_item(path):
-    """Items the handler adds besides the [Files] entries (unchanged until Phase 4)."""
-    return path == "unins___.exe" or path.startswith("embedded\\")
 
 
 def read_text(path):
@@ -60,31 +72,27 @@ def read_text(path):
         return f.read().replace(b"\r\n", b"\n").decode("ascii")
 
 
+def filetime(unix_time):
+    return (unix_time + 11644473600) * 10 ** 7
+
+
 class Results:
     def __init__(self):
-        self.counts = dict.fromkeys(["PASS", "FAIL", "XFAIL", "XPASS", "SKIP"], 0)
+        self.counts = dict.fromkeys(["PASS", "FAIL", "SKIP"], 0)
 
     def report(self, status, name, detail=""):
         self.counts[status] += 1
         print("%-5s %s%s" % (status, name, ": " + detail if detail else ""), flush=True)
 
-    def check(self, name, problems):
+    def check(self, name, problems, detail=""):
         if problems:
-            self.report("FAIL", name, "; ".join(problems[:5]) + (" ..." if len(problems) > 5 else ""))
+            self.report("FAIL", name, (detail + "; " if detail else "") + "; ".join(problems[:5])
+                        + (" ..." if len(problems) > 5 else ""))
         else:
-            self.report("PASS", name)
-
-    def expect_failure(self, name, failed, problems):
-        """For known problems: failed=True is XFAIL, a success is XPASS (counted as a failure)."""
-        if problems:
-            self.report("FAIL", name, "; ".join(problems))
-        elif failed:
-            self.report("XFAIL", name, "known problem, fixed in Phase 4")
-        else:
-            self.report("XPASS", name, "passed unexpectedly, update the expectation")
+            self.report("PASS", name, detail)
 
     def failed(self):
-        return self.counts["FAIL"] + self.counts["XPASS"] > 0
+        return self.counts["FAIL"] > 0
 
     def summary(self):
         return ", ".join("%d %s" % (n, k) for k, n in self.counts.items())
