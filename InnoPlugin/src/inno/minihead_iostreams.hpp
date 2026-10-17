@@ -1,8 +1,13 @@
 // minihead_iostreams.hpp
-// Minimal stand-ins for the Boost facilities used by the innoextract-derived code
-// (written for this plugin, not part of innoextract). Some parts are adapted from
-// Boost.Iostreams and Boost.Integer (Boost Software License 1.0, see
-// THIRD-PARTY-NOTICES.md).
+// Reimplements the parts of the Boost interface that the innoextract-derived
+// code uses (written for this plugin, not part of innoextract).
+//
+// Exception: flag_type, basic_mini_buffer::underflow() and
+// symmetric_filter::read() and fill() are adapted from Boost.Iostreams
+// boost/iostreams/detail/streambuf/indirect_streambuf.hpp and
+// boost/iostreams/filter/symmetric.hpp (Copyright 2003-2007 Jonathan Turkanis,
+// Copyright 2008 CodeRage, LLC). These parts are distributed under the Boost
+// Software License, Version 1.0; see THIRD-PARTY-NOTICES.md.
 #pragma once
 #ifndef _MINIHEAD_IOSTREAMS_HPP
 #define _MINIHEAD_IOSTREAMS_HPP

@@ -52,26 +52,26 @@ static const char* const kMethods[] =
 
 using std::make_unique;
 
-inline std::string OSS_Clean(std::string s) noexcept {
-	size_t last_dot = s.find_last_of('.');
-	std::string property_name = last_dot != std::string::npos ? s.substr(last_dot + 1) : s;
-	// copied from https://codereview.stackexchange.com/a/263761
-	bool tail = false;
-	std::size_t n = 0;
-	for (unsigned char c : property_name) {
-		if (c == '-' || c == '_') {
-			tail = false;
+// Turns the stringified member expression "object.member_name" (or
+// "member-name") into "MemberName".
+inline std::string OSS_Clean(const std::string &s)
+{
+	const size_t lastDot = s.rfind('.');
+	const size_t start = (lastDot == std::string::npos) ? 0 : lastDot + 1;
+	std::string name;
+	bool wordStart = true;
+	for (size_t i = start; i < s.size(); i++)
+	{
+		const unsigned char c = (unsigned char)s[i];
+		if (c == '_' || c == '-')
+		{
+			wordStart = true;
+			continue;
 		}
-		else if (tail) {
-			property_name[n++] = c;
-		}
-		else {
-			tail = true;
-			property_name[n++] = (char)std::toupper(c);
-		}
+		name += wordStart ? (char)std::toupper(c) : (char)c;
+		wordStart = false;
 	}
-	property_name.resize(n);
-	return property_name;
+	return name;
 }
 
 inline std::string Flag_Clean(std::string s)

@@ -1,4 +1,4 @@
-// Origin: innoextract src/stream/slice.hpp, tag 1.9 (commit 81fd9b95b76ee5115ce116bfdbc3bc6b887b809d).
+// Origin: innoextract src/stream/slice.hpp, commit 83c1544b3f (master, 2021-12-02).
 // Modified for the 7-Zip Inno plugin.
 #include "../minihead.hpp"
 /*

@@ -306,21 +306,33 @@ static HRESULT IsArchiveItemFolder(IInArchive *archive, UInt32 index, bool &resu
   return S_OK;
 }
 
+// Characters that Windows does not allow in file names. They are replaced with
+// '_' in every path component, as 7-Zip does on Windows (ReplaceIncorrectChars
+// in CPP/7zip/UI/Common/ExtractingFilePath.cpp), but on every platform, so the
+// output names are the same on Linux and Windows. Installers use such names,
+// for example "{code:GetDestDir}\app.exe".
+static bool IsIncorrectFileNameChar(wchar_t c)
+{
+  return c < 0x20 || c == L':' || c == L'*' || c == L'?' || c == L'<'
+      || c == L'>' || c == L'|' || c == L'"';
+}
+
 // Converts an item path to a relative path below the output folder. Both '\\'
-// and '/' separate components. Returns false for absolute paths, ".." and
-// components with ':' (drive letters, alternate data streams).
+// and '/' separate components. Returns false for absolute paths (a leading
+// separator or a drive letter such as "C:") and for "..".
 static bool GetSafeRelativePath(const UString &path, UString &result)
 {
   result.Empty();
+  if (path.Len() >= 2 && path[1] == L':'
+      && ((path[0] >= L'a' && path[0] <= L'z') || (path[0] >= L'A' && path[0] <= L'Z')))
+    return false; // drive letter
   UString part;
   for (unsigned i = 0; i <= path.Len(); i++)
   {
     const wchar_t c = (i < path.Len() ? path[i] : 0);
     if (c != 0 && c != L'\\' && c != L'/')
     {
-      if (c == L':')
-        return false;
-      part += c;
+      part += (IsIncorrectFileNameChar(c) ? L'_' : c);
       continue;
     }
     if (part.IsEmpty())

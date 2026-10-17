@@ -1,8 +1,13 @@
 // minihead.hpp
-// Minimal stand-ins for the Boost facilities used by the innoextract-derived code
-// (written for this plugin, not part of innoextract). Some parts are adapted from
-// Boost.Iostreams and Boost.Integer (Boost Software License 1.0, see
-// THIRD-PARTY-NOTICES.md).
+// Reimplements the parts of the Boost interface that the innoextract-derived
+// code uses (written for this plugin, not part of innoextract).
+//
+// Exception: exact_signed_base_helper, exact_unsigned_base_helper, int_t and
+// uint_t are copied from Boost.Integer boost/integer.hpp (Copyright Beman Dawes
+// and Daryle Walker 1999), and static_unsigned_min follows
+// boost/integer/static_min_max.hpp (Copyright Daryle Walker 2001). These parts
+// are distributed under the Boost Software License, Version 1.0; see
+// THIRD-PARTY-NOTICES.md.
 #pragma once
 #ifndef _MINIHEAD_HPP
 #define _MINIHEAD_HPP
