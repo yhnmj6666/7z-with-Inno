@@ -26,13 +26,22 @@ IS_WINDOWS = os.name == "nt"
 sys.path.insert(0, TESTS_DIR)
 import make_payload  # noqa: E402
 
-COMPILERS = ["5.6.1-unicode", "6.0.5", "6.1.2", "6.2.2"]
-VARIANTS = ["lzma-solid", "lzma2-nonsolid", "none"]
+COMPILERS = ["5.6.1", "5.6.1-unicode", "6.0.5", "6.1.2", "6.2.2"]
+VARIANTS = [
+    "lzma-solid",
+    "lzma2-nonsolid",
+    "zip-solid",
+    "zip-nonsolid",
+    "bzip-solid",
+    "bzip-nonsolid",
+    "none",
+]
 TIMEOUT = 600
 
 # Characters that Windows does not allow in file names. The test client and
 # 7-Zip on Windows replace them with '_' in each path component.
 INCORRECT_CHARS = re.compile(r'[\x00-\x1f:*?<>|"]')
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def fs_components(archive_path):
@@ -228,8 +237,9 @@ def compare_listing(items, entries, payload):
     return problems
 
 
-def compare_folder(out_dir, entries, payload):
+def compare_folder(out_dir, entries, payload, excluded_sources=None):
     """Compares extracted files with the payload. Returns a list of problems."""
+    excluded_sources = set(excluded_sources or ())
     problems = []
     expected = {}
     for path, source in entries:
@@ -240,6 +250,8 @@ def compare_folder(out_dir, entries, payload):
             rel = os.path.relpath(os.path.join(root, n), out_dir)
             found.add(tuple(rel.split(os.sep)))
     for comps, source in sorted(expected.items()):
+        if source in excluded_sources:
+            continue
         if comps not in found:
             problems.append("not extracted: %s" % "/".join(comps))
             continue
@@ -252,6 +264,28 @@ def compare_folder(out_dir, entries, payload):
         if comps not in expected and comps != ("unins___.exe",) and comps[0] != "embedded":
             problems.append("unexpected file %s" % "/".join(comps))
     return problems
+
+
+def corrupt_stored_payload(exe, corrupt_exe, payload_data):
+    """Copies exe and flips a byte in a unique payload slice. Returns the file offset."""
+    middle = len(payload_data) // 2
+    needle = payload_data[middle - 32:middle + 32]
+    with open(exe, "rb") as f:
+        data = bytearray(f.read())
+    offsets = []
+    offset = data.find(needle)
+    while offset >= 0:
+        offsets.append(offset)
+        offset = data.find(needle, offset + 1)
+    if len(offsets) != 1:
+        raise ValueError("random.bin marker occurs %d times in installer (expected exactly once)"
+                         % len(offsets))
+    flip_offset = offsets[0] + len(needle) // 2
+    data[flip_offset] ^= 1
+    os.makedirs(os.path.dirname(corrupt_exe), exist_ok=True)
+    with open(corrupt_exe, "wb") as f:
+        f.write(data)
+    return flip_offset
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +336,47 @@ def test_client(args, results, installers, entries, payload, env):
         code, out, err = run([client, plugin, "t", exe], env=env)
         results.expect_failure("client t %s" % tag, code == 3, [] if code in (0, 3) else exit_problem(code, err))
 
+        if variant == "none":
+            name = "client corrupt-crc %s" % tag
+            corrupt_exe = os.path.join(args.work_dir, "corrupt", compiler, "none.exe")
+            corrupt_out = os.path.join(args.work_dir, "client-corrupt", compiler, "none")
+            try:
+                flip_offset = corrupt_stored_payload(
+                    exe, corrupt_exe, payload["data/random.bin"])
+            except (OSError, ValueError) as e:
+                results.report("FAIL", name, str(e))
+                continue
+
+            code, out, err = run([client, plugin, "x", corrupt_exe, corrupt_out], env=env)
+            problems = exit_problem(code, err, expected=4)
+            item_results = [
+                o for o in parse_json_lines(out) if o.get("type") == "item_result"
+            ]
+            is_random = lambda o: o.get("path", "").replace("/", "\\").lower().endswith(
+                "data\\random.bin")
+            random_results = [o for o in item_results if is_random(o)]
+            expected_random = sum(
+                path.lower().endswith("data\\random.bin") for path, _ in entries[variant])
+            if len(random_results) != expected_random:
+                problems.append("random.bin item results %d (expected %d)"
+                                % (len(random_results), expected_random))
+            for item in random_results:
+                if item.get("result") != "crc_error":
+                    problems.append("%s result %s (expected crc_error)"
+                                    % (item.get("path"), item.get("result")))
+            for item in item_results:
+                if not is_random(item) and item.get("result") != "ok":
+                    problems.append("%s result %s (expected ok)"
+                                    % (item.get("path"), item.get("result")))
+            problems += compare_folder(
+                corrupt_out, entries[variant], payload, excluded_sources={"data/random.bin"})
+            detail = "flipped installer byte at offset %d" % flip_offset
+            if problems:
+                results.report("FAIL", name, detail + "; " + "; ".join(problems[:5])
+                               + (" ..." if len(problems) > 5 else ""))
+            else:
+                results.report("PASS", name, detail)
+
 
 # ---------------------------------------------------------------------------
 # Windows 7-Zip (natively on Windows, under Wine elsewhere)
@@ -333,6 +408,7 @@ def parse_slt(text):
     archive, items, current = {}, [], None
     state = 0
     for line in text.splitlines():
+        line = ANSI_ESCAPE.sub("", line)
         if state == 0:
             if line == "--":
                 state = 1

@@ -188,6 +188,7 @@ try
 			RINOK(extractCallback->PrepareOperation(askMode));
 			UInt32 previousUse = (UInt32)(-1);
 			HRESULT result = E_FAIL;
+			Int32 opRes = NExtract::NOperationResult::kOK;
 			if (_archive.CheckCollideLocations(index, previousUse))
 			{
 				if (previousUse < numItems)
@@ -196,7 +197,7 @@ try
 					if (buffer.empty())
 					{
 						// if collide but the buffer is empty, we fill the buffer.
-						result = _archive.ExtractItem(index, testMode, writer.get(), &buffer);
+						result = _archive.ExtractItem(index, testMode, writer.get(), opRes, &buffer);
 					}
 					else
 					{
@@ -208,25 +209,16 @@ try
 			{
 				auto shouldReuse = reuseBuffer.find(index);
 				if (shouldReuse != reuseBuffer.end())
-					result = _archive.ExtractItem(index, testMode, writer.get(), &shouldReuse->second);
+					result = _archive.ExtractItem(index, testMode, writer.get(), opRes, &shouldReuse->second);
 				else
-					result = _archive.ExtractItem(index, testMode, writer.get());
+					result = _archive.ExtractItem(index, testMode, writer.get(), opRes);
 			}
-			switch (result)
-			{
-			case S_OK:
-				extractCallback->SetOperationResult(NExtract::NOperationResult::kOK);
-				break;
-			case E_OUTOFMEMORY:
+			if (result == S_OK)
+				extractCallback->SetOperationResult(opRes);
+			else if (result == E_OUTOFMEMORY)
 				extractCallback->SetOperationResult(NExtract::NOperationResult::kUnavailable);
-				break;
-			case ERROR_INCORRECT_SIZE:
-			case ERROR_DATA_CHECKSUM_ERROR:
-			case E_FAIL:
-			default:
+			else
 				extractCallback->SetOperationResult(NExtract::NOperationResult::kDataError);
-				break;
-			}
 		}
 		else
 			return E_FAIL;

@@ -75,13 +75,21 @@ set(SEVENZIP_PLUGIN_SOURCES
   CPP/7zip/Archive/DllExports2.cpp
   CPP/7zip/Common/CreateCoder.cpp
   CPP/7zip/Common/FilterCoder.cpp
+  CPP/7zip/Common/InBuffer.cpp
   CPP/7zip/Common/LimitedStreams.cpp
+  CPP/7zip/Common/OutBuffer.cpp
   CPP/7zip/Common/ProgressUtils.cpp
   CPP/7zip/Common/PropId.cpp
   CPP/7zip/Common/StreamObjects.cpp
   CPP/7zip/Common/StreamUtils.cpp
+  CPP/7zip/Compress/BitlDecoder.cpp
+  CPP/7zip/Compress/BZip2Crc.cpp
+  CPP/7zip/Compress/BZip2Decoder.cpp
   CPP/7zip/Compress/CodecExports.cpp
   CPP/7zip/Compress/CopyCoder.cpp
+  CPP/7zip/Compress/DeflateDecoder.cpp
+  CPP/7zip/Compress/LzOutWindow.cpp
+  CPP/7zip/Compress/ZlibDecoder.cpp
 )
 
 # File system helpers used by the client (as in upstream CPP/7zip/UI/Client7z).
@@ -100,6 +108,7 @@ list(TRANSFORM SEVENZIP_PLUGIN_SOURCES PREPEND ${SEVENZIP_DIR}/)
 list(TRANSFORM SEVENZIP_CLIENT_SOURCES PREPEND ${SEVENZIP_DIR}/)
 
 set(INNO_HANDLER_SOURCES
+  src/InnoDecoder.cpp
   src/InnoHandler.cpp
   src/InnoIn.cpp
   src/InnoInterop.cpp
@@ -110,7 +119,6 @@ set(INNO_HANDLER_SOURCES
 
 set(INNO_FORMAT_SOURCES
   src/inno/minihead.cpp
-  src/inno/minihead_iostreams.cpp
   src/inno/crypto/adler32.cpp
   src/inno/crypto/arc4.cpp
   src/inno/crypto/checksum.cpp
@@ -142,8 +150,6 @@ set(INNO_FORMAT_SOURCES
   src/inno/stream/block.cpp
   src/inno/stream/chunk.cpp
   src/inno/stream/file_stream.cpp
-  src/inno/stream/lzma.cpp
-  src/inno/stream/slice.cpp
   src/inno/util/console.cpp
   src/inno/util/encoding.cpp
   src/inno/util/load.cpp
@@ -162,6 +168,9 @@ add_library(Inno SHARED
   ${SEVENZIP_PLUGIN_SOURCES}
 )
 target_include_directories(Inno PRIVATE ${SEVENZIP_DIR})
+# Single-threaded decoders: the BZip2 decoder's multithreading code is not
+# vendored.
+target_compile_definitions(Inno PRIVATE Z7_ST)
 set_target_properties(Inno PROPERTIES PREFIX "")
 
 if(WIN32)

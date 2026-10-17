@@ -1,5 +1,6 @@
 // Origin: innoextract src/stream/chunk.hpp, commit 83c1544b3f (master, 2021-12-02).
-// Modified for the 7-Zip Inno plugin.
+// Modified for the 7-Zip Inno plugin: the chunk reader is replaced by
+// NArchive::NInno::CChunkDecoder (src/InnoDecoder.h).
 #include "../minihead.hpp"
 /*
  * Copyright (C) 2011-2019 Daniel Scharrer
@@ -24,11 +25,11 @@
 /*!
  * \file
  *
- * Wrapper to read and decompress a chunk from a \ref stream::slice_reader.
+ * Information about a compressed chunk.
  *
  * A chunk consists of one compression stream (one of \ref stream::compression_method) and
  * contains one or more \ref stream::file "files".
- * Files may also have additional filters managed by \ref stream::file_reader.
+ * Files may also have additional filters (\ref stream::compression_filter).
  */
 #ifndef INNOEXTRACT_STREAM_CHUNK_HPP
 #define INNOEXTRACT_STREAM_CHUNK_HPP
@@ -37,22 +38,9 @@
 #include <ios>
 #include <string>
 
-//#include <boost/cstdint.hpp>
-//#include <boost/iostreams/chain.hpp>
-
 #include "../util/enum.hpp"
-#include "../util/unique_ptr.hpp"
 
 namespace stream {
-
-class slice_reader;
-
-//! Error thrown by \ref chunk_reader::get if there was a problem.
-struct chunk_error : public std::ios_base::failure {
-	
-	explicit chunk_error(const std::string & msg) : std::ios_base::failure(msg) { }
-	
-};
 
 //! Compression methods supported by chunks.
 enum compression_method {
@@ -75,8 +63,6 @@ enum encryption_method {
  * Information specifying a compressed chunk.
  *
  * This data is stored in \ref setup::data_entry "data entries".
- *
- * Chunks specified by this struct can be read using \ref chunk_reader.
  */
 struct chunk {
 	
@@ -93,37 +79,6 @@ struct chunk {
 	
 	bool operator<(const chunk & o) const;
 	bool operator==(const chunk & o) const;
-	
-};
-
-class silce_source;
-
-/*!
- * Wrapper to read and decompress a chunk from a \ref slice_reader.
- * Restrics the stream to the chunk size and applies the appropriate decompression.
- */
-class chunk_reader {
-	
-public:
-	
-	typedef boost::iostreams::chain<boost::iostreams::input> type;
-	typedef util::unique_ptr<type>::type                     pointer;
-	
-	/*!
-	 * Wrap a \ref slice_reader to read and decompress a single chunk.
-	 *
-	 * Only one wrapper can be used at the same time for each \c base.
-	 *
-	 * \param base  The slice reader for the setup file(s).
-	 * \param chunk Information specifying the chunk to read.
-	 * \param key   Key used for encrypted chunks.
-	 *
-	 * \throws chunk_error if the chunk header could not be read or was invalid,
-	 *                     or if the chunk compression is not supported by this build.
-	 *
-	 * \return a pointer to a non-seekable input filter chain for the requested file.
-	 */
-	static pointer get(slice_reader & base, const ::stream::chunk & chunk, const std::string & key);
 	
 };
 

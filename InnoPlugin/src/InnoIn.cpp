@@ -24,7 +24,9 @@
 #include "inno/setup/message.hpp"
 #include "inno/setup/registry.hpp"
 #include "inno/setup/run.hpp"
+#include "inno/crypto/hasher.hpp"
 #include "inno/stream/chunk.hpp"
+#include "inno/stream/exefilter.hpp"
 #include "inno/util/load.hpp"
 #include "inno/util/log.hpp"
 
@@ -118,6 +120,7 @@ std::string CInArchive::GetLogPath()
 HRESULT CInArchive::Open(IInStream* stream, FILETIME modifiedTime)
 {
 	_modifiedTime = modifiedTime;
+	_stream = stream;
 	_pInteropStream = make_unique<InteropStream>(stream);
 	_pInStream = make_unique<istream>(_pInteropStream.get());
 	_offsets.load(*_pInStream);
@@ -225,13 +228,12 @@ bool CInArchive::CheckCollideLocations(UInt32 index, UInt32& firstAppearance)
 	}
 }
 
-HRESULT CInArchive::ExtractItem(UInt32 indice, bool testMode, InteropFileStreamProgressWriter* outStream, std::string* savedBuffer)
+HRESULT CInArchive::ExtractItem(UInt32 indice, bool testMode, InteropFileStreamProgressWriter* outStream, Int32& opRes, std::string* savedBuffer)
 {
+	opRes = NExtract::NOperationResult::kOK;
 	size_t indice64 = indice;
 	if (indice64 >= _info.files.size())
 		return _embedded.ExtractItem(indice64 - _info.files.size(), testMode, outStream);
-	if (!_extractInitialized)
-		PrepareExtraction();
 	setup::file_entry& file_info = _info.files[indice64];
 	if (file_info.location >= _info.data_entries.size())
 	{
@@ -240,50 +242,96 @@ HRESULT CInArchive::ExtractItem(UInt32 indice, bool testMode, InteropFileStreamP
 		else
 			return S_FALSE;
 	}
-	setup::data_entry& data_info = _info.data_entries[file_info.location];
-	stream::chunk& chunk = data_info.chunk;
-	chunk_reader* chunk_source = OpenChunk(chunk);
-	crypto::checksum checksum;
-	if(data_info.file.offset>(uint64_t)chunk_source->TotalRead())
+	if (_offsets.data_offset == 0)
 	{
-		util::discard(*chunk_source, data_info.file.offset - chunk_source->TotalRead());
+		//TODO: implement multi-part setup files.
+		throw NotImplemented("disk spanning");
 	}
-	else if (data_info.file.offset < (uint64_t)chunk_source->TotalRead())
+	const setup::data_entry& data_info = _info.data_entries[file_info.location];
+	const stream::chunk& chunk = data_info.chunk;
+	const stream::file& file = data_info.file;
+
+	if (chunk.encryption != stream::Plaintext && password.empty())
 	{
-		chunk_source=ResetChunkReader(chunk);
-		util::discard(*chunk_source, data_info.file.offset - chunk_source->TotalRead());
+		opRes = NExtract::NOperationResult::kUnsupportedMethod;
+		return S_OK;
 	}
-	unique_ptr<istream> file_source = stream::file_reader::get(*chunk_source, data_info.file, &checksum);
-	constexpr size_t buffer_size = 16 * 1024;
-	char* p_buffer = new char[buffer_size];
-	uint64_t total_output = 0;
-	while (!file_source->eof())
+
+	crypto::hasher hasher(file.checksum.type);
+	if (file.size != 0)
 	{
-		file_source->read(p_buffer, buffer_size);
-		std::streamsize n = file_source->gcount();
-		if (n == (std::streamsize)-1 && file_source->eof())
+		HRESULT res = S_OK;
+		if (!_chunkDecoder.IsOpen(chunk) || _chunkDecoder.GetPos() > file.offset)
+			res = _chunkDecoder.Open(_stream, _offsets.data_offset, chunk, password);
+		if (res == S_OK)
+			res = _chunkDecoder.SkipTo(file.offset);
+		if (res != S_OK)
 		{
-			n = 0;
+			_chunkDecoder.Close();
+			if (res == E_NOTIMPL)
+				opRes = NExtract::NOperationResult::kUnsupportedMethod;
+			else if (res == S_FALSE)
+				opRes = NExtract::NOperationResult::kDataError;
+			else
+				return res;
+			return S_OK;
 		}
-		if (savedBuffer != nullptr)
-			savedBuffer->append(p_buffer, (size_t)n);
-		if (!testMode)
+
+		const size_t kBufSize = (size_t)1 << 16;
+		if (_extractBuf.Size() == 0)
+			_extractBuf.Alloc(kBufSize);
+		Byte* buf = _extractBuf;
+		stream::inno_exe_decoder_4108 decoder4108;
+		stream::inno_exe_decoder_5200 decoder5200(file.filter == stream::InstructionFilter5309);
+		UInt64 rem = file.size;
+		size_t held = 0;
+		while (rem != 0 || held != 0)
 		{
-			RINOK(outStream->Write(p_buffer, (UInt32)n));
+			size_t size = kBufSize - held;
+			if (size > rem)
+				size = (size_t)rem;
+			const size_t requested = size;
+			res = _chunkDecoder.Read(buf + held, size);
+			if (res != S_OK && res != S_FALSE)
+				return res;
+			if (res == S_FALSE || size != requested)
+			{
+				_chunkDecoder.Close();
+				opRes = (res == S_OK) ?
+					NExtract::NOperationResult::kUnexpectedEnd :
+					NExtract::NOperationResult::kDataError;
+				return S_OK;
+			}
+			rem -= size;
+			const size_t avail = held + size;
+			size_t done = avail;
+			switch (file.filter)
+			{
+			case stream::InstructionFilter4108:
+				decoder4108.decode(buf, avail);
+				break;
+			case stream::InstructionFilter5200:
+			case stream::InstructionFilter5309:
+				done = decoder5200.decode(buf, avail, rem == 0);
+				break;
+			default:
+				break;
+			}
+			hasher.update((const char*)buf, done);
+			if (savedBuffer != nullptr)
+				savedBuffer->append((const char*)buf, done);
+			if (!testMode)
+			{
+				RINOK(outStream->Write((const char*)buf, done));
+			}
+			held = avail - done;
+			if (held != 0)
+				memmove(buf, buf + done, held);
 		}
-		total_output += n;
 	}
-	delete[] p_buffer;
-	if (total_output != data_info.uncompressed_size)
-	{
-		log_warning << "Extracted size mismatch for file " << file_info.destination << " expected: " << data_info.uncompressed_size << " actual: " << total_output;
-		return ERROR_INCORRECT_SIZE;
-	}
-	if (checksum != data_info.file.checksum)
-	{
-		log_warning << "Checksum mismatch for file " << file_info.destination;
-		return ERROR_DATA_CHECKSUM_ERROR;
-	}
+
+	if (hasher.finalize() != file.checksum)
+		opRes = NExtract::NOperationResult::kCRCError;
 	return S_OK;
 }
 
@@ -305,29 +353,6 @@ bool CInArchive::OpenInfo()
 	return true;
 }
 
-void CInArchive::PrepareExtraction()
-{
-	if (_offsets.data_offset) {
-		_pSliceReader.reset(new stream::slice_reader(_pInStream.get(), _offsets.data_offset));
-		_extractInitialized = true;
-	}
-	else {
-		//TODO: implement multi-part setup files.
-		throw NotImplemented(minihead_func_sig);
-		//fs::path dir = installer.parent_path();
-		//std::string basename = util::as_string(installer.stem());
-		//std::string basename2 = info.header.base_filename;
-		//// Prevent access to unexpected files
-		//std::replace(basename2.begin(), basename2.end(), '/', '_');
-		//std::replace(basename2.begin(), basename2.end(), '\\', '_');
-		//// Older Inno Setup versions used the basename stored in the headers, change our default accordingly
-		//if (info.version < INNO_VERSION(4, 1, 7) && !basename2.empty()) {
-		//	std::swap(basename2, basename);
-		//}
-		//_pSliceReader.reset(new stream::slice_reader(dir, basename, basename2, info.header.slices_per_disk));
-	}
-}
-
 void CInArchive::FindCollideLocation()
 {
 	//check for collision, both locations and file names
@@ -346,22 +371,6 @@ void CInArchive::FindCollideLocation()
 			_hasCollision = true;
 		}
 	}
-}
-
-CInArchive::chunk_reader* CInArchive::OpenChunk(stream::chunk& chunk)
-{
-	if (!(chunk == _chunk))
-	{
-		_pChunkReader = stream::chunk_reader::get(*_pSliceReader, chunk, password);
-		_chunk = chunk;
-	}
-	return _pChunkReader.get();
-}
-
-CInArchive::chunk_reader* CInArchive::ResetChunkReader(stream::chunk& chunk)
-{
-	_pChunkReader = stream::chunk_reader::get(*_pSliceReader, chunk, password);
-	return _pChunkReader.get();
 }
 
 CEmbeddedFiles::CEmbeddedFiles(setup::info& info, bool hasCollision, FILETIME time)
@@ -1121,7 +1130,7 @@ CInArchiveReadProgressQueryHelper::CInArchiveReadProgressQueryHelper(const CInAr
 UInt64 CInArchiveReadProgressQueryHelper::TotalRead() const
 {
 	if (_archive != nullptr)
-		return _archive->_pInteropStream->TotalRead();
+		return _archive->_pInteropStream->TotalRead() + _archive->_chunkDecoder.GetPackSize();
 	else
 		return 0;
 }

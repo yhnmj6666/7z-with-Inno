@@ -19,8 +19,13 @@ How the subset was chosen
    upstream's single-format plugin CPP/7zip/Archive/7z/makefile:
    ArchiveExports.cpp, DllExports2.cpp and CPP/7zip/Archive/Archive.def, plus
    CodecExports.cpp and CreateCoder.cpp, which needs FilterCoder.cpp. The
-   handler uses C/LzmaDec.c and C/Lzma2Dec.c for LZMA and LZMA2. The client
-   uses the files that upstream CPP/7zip/UI/Client7z uses.
+   handler decodes Inno Setup data with C/LzmaDec.c and C/Lzma2Dec.c (LZMA,
+   LZMA2), CPP/7zip/Compress/DeflateDecoder.cpp and ZlibDecoder.cpp (zlib)
+   and BZip2Decoder.cpp with BZip2Crc.cpp (bzip2), plus the files that these
+   decoders need (BitlDecoder.cpp, LzOutWindow.cpp, CPP/7zip/Common/InBuffer.cpp
+   and OutBuffer.cpp). The plugin is built with Z7_ST, so the multithreaded
+   BZip2 decoder code is not needed. The client uses the files that upstream
+   CPP/7zip/UI/Client7z uses.
 2. Every header that these files, ../../src and ../../tests/client include,
    directly or indirectly, on Windows (MSVC, MinGW) and Linux (GCC).
    C/Threads.h is left out: only an "#if 0" block in CPP/Common/MyCom.h

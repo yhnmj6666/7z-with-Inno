@@ -72,11 +72,11 @@ Tested so far:
 
 | Inno Setup | Tested with |
 |---|---|
-| 5.6.1 (Unicode), 6.0.5, 6.1.2, 6.2.2 | test corpus (`lzma` solid, `lzma2` non-solid, `none`), every CI run |
+| 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2 | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`), every CI run |
 | 5.5.0 (Unicode), 6.0.0, 6.2.0 | real installers, checked by the owner with the MSVC build: listing and extraction match the old plugin |
 
-Installers built with `Compression=zip` or `bzip`, encrypted or disk-spanning
-installers, and Inno Setup 6.3 or later are not supported yet.
+Encrypted or disk-spanning installers and Inno Setup 6.3 or later are not
+supported yet.
 
 ## Known limitations
 
@@ -90,25 +90,22 @@ Inherited from the old plugin; later phases of the rewrite fix them.
   so non-ASCII paths are garbled.
 - The handler writes to the console, writes a log file to the temporary
   folder on every open, and always sets the warning "Check debug log at: ...".
-- zlib and bzip2 decompression are stubs: installers built with
-  `Compression=zip` or `bzip` cannot be extracted, and old versions with
-  zlib-compressed setup headers cannot be opened.
 - `IsArc_Inno` always returns NO, and the physical size is not reported.
 - The CRC column shows the first 4 bytes of the entry checksum (SHA-1 for the
   tested versions), not a CRC-32.
-- The first bad item aborts the whole extraction instead of reporting a
-  per-item error. Extraction follows the requested order, so going backwards
-  inside a solid chunk restarts decompression, and files that share one data
-  location are buffered whole in memory.
-- No passwords (encrypted installers), no disk spanning, no Inno Setup 6.3 or
-  later.
+- Cancelling and write errors are reported as a data error of the current
+  item instead of stopping the extraction. Extraction follows the requested
+  order, so going backwards inside a solid chunk restarts decompression, and
+  files that share one data location are buffered whole in memory.
+- No passwords: encrypted files are reported as "Unsupported Method". No disk
+  spanning, no Inno Setup 6.3 or later.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `CMakeLists.txt`, `cmake/` | build definition, MinGW toolchain files |
-| `src/` | handler and 7-Zip glue |
+| `src/` | handler, data pipeline (`InnoDecoder.*`: chunks through 7-Zip streams and decoders) and 7-Zip glue |
 | `src/inno/` | Inno Setup format code derived from innoextract, and `minihead*` (stand-ins for the Boost parts it uses) |
 | `third_party/7zip/` | unmodified subset of 7-Zip 26.04, see `third_party/7zip/VERSION.txt` |
 | `tests/` | test client, corpus scripts, payload generator, test runner, DLL check |

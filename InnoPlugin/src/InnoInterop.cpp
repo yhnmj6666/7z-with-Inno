@@ -1,6 +1,7 @@
 #include "StdAfx.h"
 
 #include "CPP/7zip/Common/StreamObjects.h"
+#include "CPP/7zip/Common/StreamUtils.h"
 
 #include "InnoInterop.h"
 #include "InnoIn.h"
@@ -76,8 +77,11 @@ streambuf::int_type InteropStream::uflow()
 
 std::streamsize InteropStream::xsgetn(char_type* s, std::streamsize count)
 {
-	UInt32 processedSize = 0;
-	_stream->Read(s, (UInt32)count, &processedSize);
+	if (count <= 0)
+		return 0;
+	size_t processedSize = (size_t)count;
+	// A read error ends the data like the end of the stream.
+	ReadStream(_stream, s, &processedSize);
 	_totalRead += processedSize;
 	return std::streamsize(processedSize);
 }

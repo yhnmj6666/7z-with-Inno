@@ -11,25 +11,16 @@
 #include "CPP/Common/UTFConvert.h"
 #include "CPP/7zip/Archive/IArchive.h"
 
+#include "InnoDecoder.h"
 #include "InnoInterop.h"
 #include "InnoItem.h"
 
 #include "inno/loader/offsets.hpp"
 #include "inno/setup/file.hpp"
 #include "inno/setup/info.hpp"
-#include "inno/stream/slice.hpp"
 
 #include <memory>
 #include <set>
-
-// Windows SDK error codes (winerror.h) used as extraction results; not defined
-// by 7-Zip's Windows compatibility headers on other platforms.
-#ifndef ERROR_DATA_CHECKSUM_ERROR
-#define ERROR_DATA_CHECKSUM_ERROR 323L
-#endif
-#ifndef ERROR_INCORRECT_SIZE
-#define ERROR_INCORRECT_SIZE 1462L
-#endif
 
 namespace NArchive {
 namespace NInno {
@@ -85,9 +76,10 @@ public:
 	std::shared_ptr<CAbstractItem> GetItem(size_t index);
 	CInArchiveReadProgressQueryHelper GetReadProgressQueryHelper() const;
 	bool CheckCollideLocations(UInt32 index, UInt32& firstAppearance);
-	HRESULT ExtractItem(UInt32 indice, bool testMode, InteropFileStreamProgressWriter* outStream, std::string* savedBuffer = nullptr);
+	// Returns S_OK and the item's NExtract::NOperationResult in opRes, or an
+	// error that stops the extraction.
+	HRESULT ExtractItem(UInt32 indice, bool testMode, InteropFileStreamProgressWriter* outStream, Int32& opRes, std::string* savedBuffer = nullptr);
 
-	using chunk_reader = boost::iostreams::chain<boost::iostreams::input>;
 	friend class CInArchiveReadProgressQueryHelper;
 private:
 	FILETIME _modifiedTime;
@@ -95,21 +87,17 @@ private:
 	CEmbeddedFiles _embedded;
 	unique_ptr<InteropStream> _pInteropStream;
 	unique_ptr<istream> _pInStream;
-	unique_ptr<stream::slice_reader> _pSliceReader;
-	unique_ptr<chunk_reader> _pChunkReader;
+	CMyComPtr<IInStream> _stream;
+	CChunkDecoder _chunkDecoder;
+	CByteBuffer _extractBuf;
 	std::map<size_t, size_t> _collisionLocations; // map of index to first appearance of that index of file entry which has same index into data entry
-	stream::chunk _chunk;
 	loader::offsets _offsets;
 	setup::info _info;
 
-	bool _extractInitialized = false;
 	bool _hasCollision = false;
 
 	bool OpenInfo();
-	void PrepareExtraction();
 	void FindCollideLocation();
-	chunk_reader* OpenChunk(stream::chunk& chunk);
-	chunk_reader* ResetChunkReader(stream::chunk& chunk);
 };
 
 class CInArchiveReadProgressQueryHelper
