@@ -171,13 +171,13 @@ def build_corpus(args, results):
     for compiler in args.compilers:
         out_dir = os.path.join(corpus, "installers", compiler)
         for variant in VARIANTS:
-            name = "compile %s/%s" % (compiler, variant)
+            name = "%s %s/%s" % ("installer" if args.no_compile else "compile", compiler, variant)
             exe = os.path.join(out_dir, variant + ".exe")
             key_file = os.path.join(out_dir, variant + ".key")
             key = corpus_key(compiler, variant)
             cached = os.path.isfile(exe) and os.path.isfile(key_file) and read_text(key_file).strip() == key
             if cached:
-                results.report("PASS", name, "cached")
+                results.report("PASS", name, "prebuilt" if args.no_compile else "cached")
                 installers[(compiler, variant)] = exe
                 continue
             if args.no_compile:
@@ -499,6 +499,7 @@ def main():
                          "plugin must already be in its Formats folder (default: %(default)s)")
     ap.add_argument("--sevenzip-plugin", default=default_7z_plugin,
                     help="plugin DLL to install into a private copy of --sevenzip-dir (default: %(default)s)")
+    ap.add_argument("--no-client", action="store_true", help="skip the test client checks")
     ap.add_argument("--no-sevenzip", action="store_true", help="skip the 7-Zip end-to-end tests")
     ap.add_argument("--corpus-dir", default=os.path.join(BUILD_DIR, "corpus"),
                     help="payload and compiled installers, also the compile cache (default: %(default)s)")
@@ -533,7 +534,10 @@ def main():
     payload = dict(make_payload.files())
     entries = {v: expected_entries(v) for v in VARIANTS}
     installers = build_corpus(args, results)
-    test_client(args, results, installers, entries, payload, env)
+    if args.no_client:
+        results.report("SKIP", "client", "--no-client")
+    else:
+        test_client(args, results, installers, entries, payload, env)
     test_sevenzip(args, results, installers, entries, payload, env)
 
     print("\nSummary: " + results.summary())

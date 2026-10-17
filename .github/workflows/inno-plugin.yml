@@ -1,0 +1,182 @@
+name: Inno plugin
+
+# Builds the 7-Zip Inno Setup plugin in InnoPlugin/ and runs its tests (see
+# InnoPlugin/tests/README.md).
+#   ubuntu-24.04: GCC, MinGW x86_64 and MinGW i686 builds, DLL export and import
+#     checks, test corpus compiled with Inno Setup under Wine, tests with the
+#     test client and with Windows 7-Zip 26.04 (64-bit and 32-bit) under Wine.
+#   windows-2022: MSVC x64 and Win32 builds, DLL checks, tests with the MSVC test
+#     client and the official 7-Zip 26.04 (x64 and x86), using the corpus from
+#     the Ubuntu job.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - InnoPlugin/**
+      - .github/workflows/inno-plugin.yml
+      - .github/scripts/setup-inno-tools.sh
+  pull_request:
+    paths:
+      - InnoPlugin/**
+      - .github/workflows/inno-plugin.yml
+      - .github/scripts/setup-inno-tools.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SEVENZIP_URL: https://github.com/ip7z/7zip/releases/download/26.04
+  # SHA-256 of the 7-Zip 26.04 release assets 7z2604-x64.exe and 7z2604.exe.
+  SEVENZIP_X64_SHA256: d54bf805f9f3704d1e8db2fa3498ae7ef2df0312b40b558e7c71c734430a665d
+  SEVENZIP_X86_SHA256: 39bf65045153fc26c42fa9fe47afd8cd1b11671c7f11d031e738c9a13960c009
+
+jobs:
+  linux:
+    name: Ubuntu (GCC, MinGW, Wine)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install packages (Wine, MinGW, build tools)
+        run: bash .github/scripts/setup-inno-tools.sh packages
+
+      - name: Install 7-Zip (Linux 7zz, Windows 7z.exe under Wine)
+        run: bash .github/scripts/setup-inno-tools.sh sevenzip
+
+      - name: Install Inno Setup compilers under Wine
+        run: bash .github/scripts/setup-inno-tools.sh iscc
+
+      - name: Build with GCC
+        working-directory: InnoPlugin
+        run: |
+          cmake -S . -B build/linux -G Ninja
+          cmake --build build/linux
+
+      - name: Build with MinGW x86_64
+        working-directory: InnoPlugin
+        run: |
+          cmake -S . -B build/mingw-x86_64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-x86_64.cmake
+          cmake --build build/mingw-x86_64
+
+      - name: Build with MinGW i686
+        working-directory: InnoPlugin
+        run: |
+          cmake -S . -B build/mingw-i686 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake
+          cmake --build build/mingw-i686
+
+      - name: Check DLL exports and imports (objdump)
+        run: >
+          python3 InnoPlugin/tests/check_dll.py
+          InnoPlugin/build/mingw-x86_64/Inno.64.dll InnoPlugin/build/mingw-i686/Inno.32.dll
+
+      - name: Tests (test client, 64-bit 7-Zip under Wine with Inno.64.dll)
+        run: >
+          python3 InnoPlugin/tests/run_tests.py
+          --sevenzip-dir /opt/inno-tools/7zip-win64
+          --sevenzip-plugin InnoPlugin/build/mingw-x86_64/Inno.64.dll
+
+      - name: Tests (32-bit 7-Zip under Wine with Inno.32.dll)
+        run: |
+          curl -fsSL -o InnoPlugin/build/7z2604.exe "$SEVENZIP_URL/7z2604.exe"
+          echo "$SEVENZIP_X86_SHA256  InnoPlugin/build/7z2604.exe" | sha256sum -c -
+          7zz x -y -oInnoPlugin/build/7zip-x86 InnoPlugin/build/7z2604.exe > /dev/null
+          python3 InnoPlugin/tests/run_tests.py --no-compile --no-client \
+            --sevenzip-dir InnoPlugin/build/7zip-x86 \
+            --sevenzip-plugin InnoPlugin/build/mingw-i686/Inno.32.dll
+
+      - name: Upload the test corpus (payload and installers)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: inno-corpus
+          path: InnoPlugin/build/corpus
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the MinGW DLLs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: inno-plugin-mingw
+          path: |
+            InnoPlugin/build/mingw-x86_64/Inno.64.dll
+            InnoPlugin/build/mingw-i686/Inno.32.dll
+          if-no-files-found: error
+
+  windows:
+    name: Windows (MSVC, official 7-Zip)
+    needs: linux
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Download the test corpus from the Ubuntu job
+        uses: actions/download-artifact@v8
+        with:
+          name: inno-corpus
+          path: InnoPlugin/build/corpus
+
+      - name: Build with MSVC x64 Release
+        working-directory: InnoPlugin
+        run: |
+          cmake -S . -B build/x64 -G "Visual Studio 17 2022" -A x64
+          cmake --build build/x64 --config Release --parallel
+
+      - name: Build with MSVC Win32 Release
+        working-directory: InnoPlugin
+        run: |
+          cmake -S . -B build/Win32 -G "Visual Studio 17 2022" -A Win32
+          cmake --build build/Win32 --config Release --parallel
+
+      - name: Check DLL exports and imports (dumpbin; no VCRUNTIME, MSVCP or api-ms-win-crt)
+        run: >
+          python InnoPlugin/tests/check_dll.py --dumpbin auto
+          InnoPlugin/build/x64/Release/Inno.64.dll InnoPlugin/build/Win32/Release/Inno.32.dll
+
+      - name: Get the official 7-Zip 26.04 x64 and x86 (extracted, not installed)
+        run: |
+          get() {
+            curl -fsSL -o "InnoPlugin/build/$1" "$SEVENZIP_URL/$1"
+            echo "$2  InnoPlugin/build/$1" | sha256sum -c -
+            7z x -y "-oInnoPlugin/build/$3" "InnoPlugin/build/$1" > /dev/null
+            mkdir -p "InnoPlugin/build/$3/Formats"
+            cp "$4" "InnoPlugin/build/$3/Formats/"
+            ls "InnoPlugin/build/$3/Formats"
+          }
+          get 7z2604-x64.exe "$SEVENZIP_X64_SHA256" 7zip-x64 InnoPlugin/build/x64/Release/Inno.64.dll
+          get 7z2604.exe "$SEVENZIP_X86_SHA256" 7zip-x86 InnoPlugin/build/Win32/Release/Inno.32.dll
+
+      - name: Tests (MSVC x64 test client, 64-bit 7-Zip with Inno.64.dll)
+        run: >
+          python InnoPlugin/tests/run_tests.py --no-compile
+          --client InnoPlugin/build/x64/Release/inno_client.exe
+          --plugin InnoPlugin/build/x64/Release/Inno.64.dll
+          --sevenzip-dir InnoPlugin/build/7zip-x64
+
+      - name: Tests (MSVC Win32 test client, 32-bit 7-Zip with Inno.32.dll)
+        run: >
+          python InnoPlugin/tests/run_tests.py --no-compile
+          --client InnoPlugin/build/Win32/Release/inno_client.exe
+          --plugin InnoPlugin/build/Win32/Release/Inno.32.dll
+          --sevenzip-dir InnoPlugin/build/7zip-x86
+
+      - name: Upload the MSVC DLLs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: inno-plugin-msvc
+          path: |
+            InnoPlugin/build/x64/Release/Inno.64.dll
+            InnoPlugin/build/Win32/Release/Inno.32.dll
+          if-no-files-found: error

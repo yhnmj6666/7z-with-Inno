@@ -1,13 +1,15 @@
 # Build definition for the 7-Zip Inno Setup plugin and its test client.
 #
-# Linux (GCC):    cmake -S InnoPlugin -B build/linux && cmake --build build/linux
-# MinGW (cross):  cmake -S InnoPlugin -B build/mingw64 -DCMAKE_TOOLCHAIN_FILE=InnoPlugin/cmake/mingw-x86_64.cmake
-#                 cmake -S InnoPlugin -B build/mingw32 -DCMAKE_TOOLCHAIN_FILE=InnoPlugin/cmake/mingw-i686.cmake
-# MSVC:           cmake -S InnoPlugin -B build/x64 -A x64 && cmake --build build/x64 --config Release
-#                 cmake -S InnoPlugin -B build/x86 -A Win32 && cmake --build build/x86 --config Release
+# Run from this folder; tests/run_tests.py expects these build folders:
+# Linux (GCC):    cmake -S . -B build/linux -G Ninja
+# MinGW x86_64:   cmake -S . -B build/mingw-x86_64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-x86_64.cmake
+# MinGW i686:     cmake -S . -B build/mingw-i686 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake
+# MSVC x64:       cmake -S . -B build/x64 -A x64
+# MSVC Win32:     cmake -S . -B build/Win32 -A Win32
+# then:           cmake --build <build folder> --config Release
 #
 # Outputs: Inno.64.dll / Inno.32.dll on Windows, Inno.so on Linux, plus the
-# test client inno_client (see tests/README.md).
+# test client inno_client (see README.md and tests/README.md).
 
 cmake_minimum_required(VERSION 3.20)
 
