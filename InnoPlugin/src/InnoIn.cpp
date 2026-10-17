@@ -1130,7 +1130,7 @@ CInArchiveReadProgressQueryHelper::CInArchiveReadProgressQueryHelper(const CInAr
 UInt64 CInArchiveReadProgressQueryHelper::TotalRead() const
 {
 	if (_archive != nullptr)
-		return _archive->_pInteropStream->TotalRead();
+		return _archive->_pInteropStream->TotalRead() + _archive->_chunkDecoder.GetPackSize();
 	else
 		return 0;
 }

@@ -208,6 +208,12 @@ void CChunkDecoder::Close()
 {
   _isOpen = false;
   _decoded.Release();
+  if (_limitedSpec)
+  {
+    _packSizeClosed += _limitedSpec->GetSize();
+    _limitedSpec = NULL;
+    _limited.Release();
+  }
   _pos = 0;
 }
 
@@ -222,29 +228,27 @@ HRESULT CChunkDecoder::Open(IInStream *stream, UInt64 dataOffset, const stream::
   if (memcmp(magic, kChunkMagic, sizeof(magic)) != 0)
     return S_FALSE;
 
-  CMyComPtr<ISequentialInStream> input;
+  char salt[8];
+  if (chunk.encryption != stream::Plaintext)
+  {
+    RINOK(ReadStream_FALSE(stream, salt, sizeof(salt)))
+  }
+
+  _limitedSpec = new CLimitedSequentialInStream;
+  _limited = _limitedSpec;
+  _limitedSpec->SetStream(stream);
+  _limitedSpec->Init(chunk.size);
+  CMyComPtr<ISequentialInStream> input = _limited;
 
   if (chunk.encryption != stream::Plaintext)
   {
-    char salt[8];
-    RINOK(ReadStream_FALSE(stream, salt, sizeof(salt)))
     const bool sha1 = (chunk.encryption == stream::ARC4_SHA1);
     crypto::hasher hasher(sha1 ? crypto::SHA1 : crypto::MD5);
     hasher.update(salt, sizeof(salt));
     hasher.update(password.c_str(), password.length());
     const crypto::checksum key = hasher.finalize();
-    CMyComPtr2_Create<ISequentialInStream, CLimitedSequentialInStream> limited;
-    limited->SetStream(stream);
-    limited->Init(chunk.size);
-    input = new CArc4InStream(limited, sha1 ? key.sha1 : key.md5,
+    input = new CArc4InStream(input, sha1 ? key.sha1 : key.md5,
         sha1 ? sizeof(key.sha1) : sizeof(key.md5));
-  }
-  else
-  {
-    CMyComPtr2_Create<ISequentialInStream, CLimitedSequentialInStream> limited;
-    limited->SetStream(stream);
-    limited->Init(chunk.size);
-    input = limited;
   }
 
   CMyComPtr<ISequentialInStream> decoded;

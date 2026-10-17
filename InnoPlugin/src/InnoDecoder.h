@@ -12,6 +12,7 @@
 #include "CPP/Common/MyBuffer.h"
 #include "CPP/Common/MyCom.h"
 #include "CPP/7zip/IStream.h"
+#include "CPP/7zip/Common/LimitedStreams.h"
 
 #include "inno/crypto/arc4.hpp"
 #include "inno/stream/chunk.hpp"
@@ -65,14 +66,20 @@ class CChunkDecoder
   bool _isOpen;
   stream::chunk _chunk;
   UInt64 _pos;
+  UInt64 _packSizeClosed;
   CMyComPtr<ISequentialInStream> _decoded;
+  CLimitedSequentialInStream *_limitedSpec;
+  CMyComPtr<ISequentialInStream> _limited;
   CByteBuffer _skipBuf;
 
 public:
-  CChunkDecoder(): _isOpen(false), _pos(0) {}
+  CChunkDecoder(): _isOpen(false), _pos(0), _packSizeClosed(0), _limitedSpec(NULL) {}
 
   bool IsOpen(const stream::chunk &chunk) const { return _isOpen && _chunk == chunk; }
   UInt64 GetPos() const { return _pos; }
+  // Total number of bytes read from the archive for all chunks so far.
+  UInt64 GetPackSize() const
+    { return _packSizeClosed + (_limitedSpec ? _limitedSpec->GetSize() : 0); }
   void Close();
 
   // Opens the chunk stored at dataOffset + chunk.offset in stream.

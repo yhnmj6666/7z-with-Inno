@@ -14,7 +14,8 @@ Open, list, test and extract Inno Setup installers in stock 7-Zip (7z.exe, 7zG.e
 
 ## 2. Current state
 
-- Phases 1 and 2 are done (#1): `InnoPlugin/` holds the standalone plugin (vendored 7-Zip 26.04, CMake build, test client, corpus, CI), with the handler in `InnoPlugin/src/` and the innoextract port in `InnoPlugin/src/inno/`. Phases 3 to 6 change this code; the problems in section 3 still apply to it. The original code below stays under `CPP/` as the parity reference until Phase 6.
+- Phases 1 and 2 are done (#1): `InnoPlugin/` holds the standalone plugin (vendored 7-Zip 26.04, CMake build, test client, corpus, CI), with the handler in `InnoPlugin/src/` and the innoextract port in `InnoPlugin/src/inno/`. Phases 4 to 6 change this code; the problems in section 3 still apply to it, except problems 1 and 2, which Phase 3 fixed. The original code below stays under `CPP/` as the parity reference until Phase 6.
+- Phase 3 is done: headers are decompressed into memory, and file data goes through 7-Zip streams and decoders (`InnoPlugin/src/InnoDecoder.*`, Deflate/zlib and BZip2 vendored from 7-Zip 26.04). `minihead_iostreams.hpp` is gone; checksum mismatches are reported as CRC errors, and encrypted files as unsupported until Phase 5.
 - The original code: this repository is a git copy of the 7-Zip 22.00 source tree with an Inno Setup handler added:
   - `CPP/7zip/Archive/Inno/` - 7-Zip glue: `InnoHandler.cpp` (IInArchive), `InnoIn.*` (CInArchive, CEmbeddedFiles), `InnoInterop.*` (std::streambuf over IInStream, progress writer), `InnoItem.*`, `InnoRegister.cpp` (`REGISTER_ARC_I_NO_SIG("Inno", "exe", 0, 0x70, ...)`, flags `kPureStartOpen | kUseGlobalOffset`).
   - `CPP/7zip/Archive/Inno/InnoExtract/` - partial port of innoextract (https://github.com/dscharrer/innoextract, zlib license), copied in 2022 from master at commit `83c1544b3f` (2021-12-02, newer than release 1.9); the owner later applied the equivalent of upstream fix `325a7c9655` to `crypto/iteratedhash.hpp`. Boost is replaced by shims written for this repository (`minihead.hpp`, `minihead_iostreams.hpp`); LZMA comes from prebuilt MSVC liblzma libraries (`liblzma/lib/*.lib`, DLL CRT). `cli/` is not compiled, and `lib/magic_enum.hpp` is included by `InnoIn.cpp` but unused.
@@ -149,7 +150,7 @@ The setup ends with a smoke test that compiles a one-file installer with every c
 - Extend `InnoPlugin/README.md` with install steps.
 - Done when: `7z i` lists `Inno` from the plugin, the corpus passes through real 7-Zip on Linux (Wine) and Windows, and the DLLs import only Windows system DLLs.
 
-### Phase 3 - Native data pipeline
+### Phase 3 - Native data pipeline (done)
 
 - Replace the stream-chain shims with the architecture in section 4: memory-backed header parsing, 7-Zip streams and decoders for all compression methods, executable filter and checksum verification in the 7-Zip pipeline; remove `minihead_iostreams.hpp`.
 - Corpus: add `zip` and `bzip`, solid and non-solid, and ANSI `5.6.1`.
