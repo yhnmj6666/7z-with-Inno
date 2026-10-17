@@ -147,7 +147,9 @@ The payload (`make_payload.py`) contains:
 - `latin1/` with Windows-1252 names, and `unicode/` with Cyrillic, Greek,
   CJK and emoji names (only in Unicode installers);
 - `collide/`, installed to the same destinations with different `Check`
-  expressions, flags, components and languages, to test the item names;
+  expressions, flags, components and languages, and one file with a unique
+  destination and `Check: Is64BitInstallMode` (listed under `{x64}\`), to
+  test the item names;
 - `time/`, a file with a winter and one with a summer modification time
   (every payload file gets a fixed modification time).
 
@@ -159,7 +161,8 @@ format:
   that payload folder, with `Flags: recursesubdirs` also those in its
   subfolders;
 - `; expect: <item path>` before an entry gives its item path, for entries
-  whose destination is not unique;
+  listed with leading folders (destinations that are not unique, and
+  entries with an architecture);
 - the preprocessor directives the runner understands: `#include`, `#define`,
   `#ifdef`, `#ifndef`, `#else` and `#endif` (`UNICODE` is defined for the
   Unicode compilers); others make it fail;

@@ -150,12 +150,16 @@ void CInArchive::BuildExtraFiles()
 /*
 Item names: files that have data in the installer keep their destination path
 ("{app}\file.txt"), extra files are listed under "embedded\". File names are
-never changed. Files whose destinations are the same ignoring case get leading
-folders, one for each property that differs within the group, in this order:
+never changed. Leading folders separate files, in this order:
   "{x86}", "{x64}" or "{arm64}": the architecture of the Check parameter, or
-      of the 32bit / 64bit flags if the Check parameter does not select one,
+      of the 32bit / 64bit flags if the Check parameter does not select one.
+      If the files of any destination (the same ignoring case) differ in
+      architecture, every file with an architecture gets this folder, so that
+      the files of each architecture stay together. Otherwise no file does.
   "{#component}": a Components parameter that is a single name,
-  "{@language}": a Languages parameter that is a single name.
+  "{@language}": a Languages parameter that is a single name. These two are
+      added only to files whose destinations are the same ignoring case, when
+      the property differs within that group.
 Then items whose paths are still taken get "{$1}", "{$2}", ... in item order.
 */
 
@@ -402,26 +406,48 @@ void CInArchive::BuildItems()
       Utf8ToUnicode("embedded\\" + Extras[k - files.size()].Name, dests[k]);
   }
 
-  std::vector<std::string> folders(numItems);
+  std::vector<std::string> archs(files.size());
+  for (size_t k = 0; k < files.size(); k++)
+  {
+    const char *arch = GetArchName(Info.files[files[k]]);
+    if (arch)
+      archs[k] = arch;
+  }
+
   std::map<std::wstring, std::vector<size_t> > groups;
   for (size_t k = 0; k < files.size(); k++)
     groups[GetPathKey(dests[k])].push_back(k);
+
+  bool useArch = false;
+  for (std::map<std::wstring, std::vector<size_t> >::const_iterator it = groups.begin();
+      it != groups.end(); ++it)
+  {
+    const std::vector<size_t> &group = it->second;
+    for (size_t j = 1; j < group.size(); j++)
+      if (archs[group[j]] != archs[group[0]])
+        useArch = true;
+  }
+
+  std::vector<std::string> folders(numItems);
+  if (useArch)
+    for (size_t k = 0; k < files.size(); k++)
+      if (!archs[k].empty())
+        folders[k] = "{" + archs[k] + "}\\";
+
   for (std::map<std::wstring, std::vector<size_t> >::const_iterator it = groups.begin();
       it != groups.end(); ++it)
   {
     const std::vector<size_t> &group = it->second;
     if (group.size() < 2)
       continue;
-    const unsigned kNumProps = 3;
-    static const char * const kPrefixes[kNumProps] = { "{", "{#", "{@" };
+    const unsigned kNumProps = 2;
+    static const char * const kPrefixes[kNumProps] = { "{#", "{@" };
     std::vector<std::string> labels[kNumProps];
     for (size_t j = 0; j < group.size(); j++)
     {
       const setup::file_entry &file = Info.files[files[group[j]]];
-      const char *arch = GetArchName(file);
-      labels[0].push_back(arch ? arch : "");
-      labels[1].push_back(GetSingleName(file.components, true));
-      labels[2].push_back(GetSingleName(file.languages, false));
+      labels[0].push_back(GetSingleName(file.components, true));
+      labels[1].push_back(GetSingleName(file.languages, false));
     }
     for (unsigned p = 0; p < kNumProps; p++)
     {

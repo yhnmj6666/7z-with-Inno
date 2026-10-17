@@ -6,7 +6,7 @@
 ; DestName). A Source ending in "\*" takes the payload files in that folder
 ; (with Flags: recursesubdirs, also in its subfolders). A line
 ; "; expect: <item path>" gives the item path of the next entry, for entries
-; whose destination is not unique.
+; listed with leading folders.
 
 [Setup]
 AppName=InnoPluginTest
@@ -50,6 +50,10 @@ Source: "payload\unicode\*"; DestDir: "{app}\unicode"; Flags: recursesubdirs
 
 ; Entries with the same destination (ignoring case) get leading folders for
 ; the properties that differ: architecture, component, language, then a number.
+; Because the architecture differs for some destinations, every entry with an
+; architecture gets its folder, also when its destination is unique.
+; expect: {x64}\{app}\collide\unique\a.dll
+Source: "payload\collide\unique-x64.dll"; DestDir: "{app}\collide\unique"; DestName: "a.dll"; Check: Is64BitInstallMode
 ; expect: {x86}\{app}\collide\arch\a.dll
 Source: "payload\collide\arch-x86.dll"; DestDir: "{app}\collide\arch"; DestName: "a.dll"; Check: not Is64BitInstallMode
 ; expect: {x64}\{app}\collide\arch\a.dll

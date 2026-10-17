@@ -38,9 +38,7 @@ installers the plugin uses the code page of the installer's languages
 (Windows-1252 if one of them uses it), as innoextract does.
 
 File names are never changed, so the files can be used right after
-extraction. When several entries have the same destination (ignoring case;
-on Windows also for non-ASCII letters), each one gets leading folders for the
-properties that differ within the group, in this order:
+extraction. Instead, entries get leading folders, in this order:
 
 | Folder | Property |
 |---|---|
@@ -48,12 +46,22 @@ properties that differ within the group, in this order:
 | `{#component}` | a `Components` parameter that is a single component (`\` in subcomponent names becomes `_`) |
 | `{@language}` | a `Languages` parameter that is a single language |
 
-An entry without a value for a property gets no folder for it. Entries whose
-paths are still not unique then get `{$1}`, `{$2}`, ... in the order of the
-entries. For example, `a.dll` installed to `{app}` once with
+If the entries of any destination (ignoring case; on Windows also for
+non-ASCII letters) differ in architecture, every entry with an architecture
+gets its architecture folder, also when its destination is unique, so that
+the files of each architecture stay together. Otherwise no entry gets one.
+The component and language folders are added only to entries that have the
+same destination as another entry, when that property differs within the
+group. An entry without a value for a property gets no folder for it. Entries
+whose paths are still not unique then get `{$1}`, `{$2}`, ... in the order of
+the entries.
+
+For example, `a.dll` installed to `{app}` once with
 `Check: not Is64BitInstallMode` and once with `Check: Is64BitInstallMode` is
 listed as `{x86}\{app}\a.dll` and `{x64}\{app}\a.dll`, and a third copy
-without a `Check` parameter as `{app}\a.dll`.
+without a `Check` parameter as `{app}\a.dll`. In the same installer, `b.dll`
+installed to `{app}` only once, with `Check: Is64BitInstallMode`, is listed as
+`{x64}\{app}\b.dll`.
 
 Besides the installed files, the listing contains files under `embedded\`
 that the installer keeps in its setup headers:
@@ -136,7 +144,7 @@ Tested so far:
 | Inno Setup | Tested with |
 |---|---|
 | 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2 | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`; timestamps in UTC and local time), every CI run |
-| 5.5.0 (Unicode), 6.0.0, 6.2.0 | real installers, checked by the owner with the MSVC build: listing and extraction match the old plugin |
+| 5.0.4 to 6.2.0 | 15 real installers, checked by the owner with the MSVC and MinGW builds: every file has the same content as with the old plugin, and `7z t` passes |
 
 Encrypted or disk-spanning installers and Inno Setup 6.3 or later are not
 supported yet.

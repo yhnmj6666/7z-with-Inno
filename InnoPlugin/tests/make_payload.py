@@ -114,6 +114,7 @@ COLLIDE_FILES = [
     "flags-32.dll", "flags-64.dll",
     "lang-en.txt", "lang-de.txt",
     "mixed-1.dll", "mixed-2.dll", "mixed-3.dll", "mixed-4.dll",
+    "unique-x64.dll",
 ]
 
 
