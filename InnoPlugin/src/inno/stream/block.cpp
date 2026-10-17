@@ -58,7 +58,7 @@ enum block_compression {
 void read_block_chunks(std::istream & base, boost::uint32_t stored_size, std::string & data) {
 	
 	data.clear();
-	data.reserve(stored_size);
+	data.reserve(std::min(size_t(stored_size), size_t(1) << 20));
 	
 	char buffer[4096];
 	while(stored_size) {
