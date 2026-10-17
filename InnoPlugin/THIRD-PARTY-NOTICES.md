@@ -16,8 +16,8 @@ contain code from the projects below.
   full license statement of 7-Zip. It also covers the files that are public
   domain (stated in the file, for example `C/LzmaDec.c`) and the BSD-licensed
   and unRAR-restricted files of 7-Zip; the vendored subset contains no BSD or
-  unRAR files. The text of the GNU LGPL 2.1 is available from
-  <https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html>.
+  unRAR files. The full text of the GNU LGPL 2.1 is in
+  [`third_party/7zip/DOC/copying.txt`](third_party/7zip/DOC/copying.txt).
 
 ## innoextract
 

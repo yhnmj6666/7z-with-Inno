@@ -4,7 +4,8 @@ Upstream:  https://github.com/ip7z/7zip
 Tag:       26.04
 Commit:    9128b80e3a471108678e2b3ec3c985861c8d7b0f (2026-10-05)
 License:   DOC/License.txt (GNU LGPL 2.1 or later, with public-domain and
-           BSD-licensed files; see ../../THIRD-PARTY-NOTICES.md)
+           BSD-licensed files; see ../../THIRD-PARTY-NOTICES.md) and
+           DOC/copying.txt (full text of the GNU LGPL 2.1)
 
 Every file in this folder is a byte-for-byte copy of the upstream file at the
 same path. Do not edit them: changes belong in ../../src, ../../tests or
@@ -24,7 +25,7 @@ How the subset was chosen
    directly or indirectly, on Windows (MSVC, MinGW) and Linux (GCC).
    C/Threads.h is left out: only an "#if 0" block in CPP/Common/MyCom.h
    includes it.
-3. DOC/License.txt.
+3. DOC/License.txt and DOC/copying.txt.
 
 How to update
 -------------
