@@ -1,14 +1,17 @@
 # Inno Setup plugin for 7-Zip
 
-A format plugin that lets stock 7-Zip (7z.exe, 7zG.exe, 7zFM.exe) open, list
-and extract Inno Setup installers. 7-Zip loads it from its `Formats` folder,
-so 7-Zip updates do not require rebuilding the plugin.
+A format plugin that lets stock 7-Zip (7z.exe, 7zG.exe, 7zFM.exe) open, list,
+test and extract Inno Setup installers. 7-Zip loads it from its `Formats`
+folder, so 7-Zip updates do not require rebuilding the plugin.
 
 This folder is the standalone rewrite of the plugin in `CPP/7zip/Archive/Inno/`
 (see `.github/prompts/inno-plugin-refactor.prompt.md`). Phases 1 and 2 moved
 the handler onto a vendored 7-Zip 26.04 subset with a CMake build for MSVC,
-GCC and MinGW, and added tests. The handler behaves like the old plugin,
-including its known problems (see [Known limitations](#known-limitations)).
+GCC and MinGW, and added tests. Phase 3 decodes the file data with 7-Zip
+streams and decoders. Phase 4 makes the handler behave like 7-Zip's own
+formats: test mode, skipped items, per-item results, progress, cancellation,
+UTF-8 names, detection of renamed installers, and no console output or files.
+See [Known limitations](#known-limitations) for what is still missing.
 
 ## Installation
 
@@ -21,13 +24,70 @@ including its known problems (see [Known limitations](#known-limitations)).
 3. Check with `7z i`: the `Libs:` section lists the DLL in `Formats`, and the
    `Formats:` section has a line with `Inno` and `exe`.
 
-Then open an installer like any archive, for example `7z l setup.exe` or
-`7z x setup.exe -oout`. Paths start with the Inno Setup constant of the
-destination, such as `{app}\readme.txt`; 7-Zip on Windows replaces characters
-that are not allowed in file names, so `{code:GetDestDir}` is extracted as
-`{code_GetDestDir}`. Besides the installed files, the listing contains
-`unins___.exe` (empty) and `embedded\` entries (reconstructed install script,
-license, language files and wizard images).
+Then open an installer like any archive, for example `7z l setup.exe`,
+`7z t setup.exe` or `7z x setup.exe -oout`.
+
+## Items
+
+Every file stored in the installer is listed under its destination path,
+which starts with the Inno Setup constant of the destination folder, such as
+`{app}\readme.txt`. 7-Zip on Windows replaces characters that are not
+allowed in file names, so `{code:GetDestDir}` is extracted as
+`{code_GetDestDir}`. Unicode installers store names in UTF-16; for ANSI
+installers the plugin uses the code page of the installer's languages
+(Windows-1252 if one of them uses it), as innoextract does.
+
+File names are never changed, so the files can be used right after
+extraction. When several entries have the same destination (ignoring case;
+on Windows also for non-ASCII letters), each one gets leading folders for the
+properties that differ within the group, in this order:
+
+| Folder | Property |
+|---|---|
+| `{x86}`, `{x64}`, `{arm64}` | the architecture that the entry's `Check` expression selects, or else the `32bit` or `64bit` flag. The plugin evaluates `Check` expressions made of `Is64BitInstallMode`, `IsWin64`, `IsX64Compatible`, `IsX64`, `IsX64OS`, `IsARM64`, `IsX86`, `IsX86OS`, `IsX86Compatible`, `and`, `or`, `not` and parentheses; an expression that is true on both x64 and Arm64 (such as `Is64BitInstallMode`) gives `{x64}` |
+| `{#component}` | a `Components` parameter that is a single component (`\` in subcomponent names becomes `_`) |
+| `{@language}` | a `Languages` parameter that is a single language |
+
+An entry without a value for a property gets no folder for it. Entries whose
+paths are still not unique then get `{$1}`, `{$2}`, ... in the order of the
+entries. For example, `a.dll` installed to `{app}` once with
+`Check: not Is64BitInstallMode` and once with `Check: Is64BitInstallMode` is
+listed as `{x86}\{app}\a.dll` and `{x64}\{app}\a.dll`, and a third copy
+without a `Check` parameter as `{app}\a.dll`.
+
+Besides the installed files, the listing contains files under `embedded\`
+that the installer keeps in its setup headers:
+
+| Item | Contents |
+|---|---|
+| `embedded\install_script.iss` | a script reconstructed from the setup headers: not the original script, approximate (for example `[File]` instead of `[Files]`, no `[Code]`) |
+| `embedded\License.txt` or `.rtf` | the license text (`LicenseFile`) |
+| `embedded\<language>.isl` | the messages of each language |
+| `embedded\<language>.txt` or `.rtf` | the license of each language |
+| `embedded\WizardImage<N>.bmp`, `embedded\WizardImageSmall<N>.bmp` | the wizard images |
+
+Modification times are the times Setup gives the installed files. Installers
+built with `TimeStampsInUTC=yes` (the default from Inno Setup 7) store UTC.
+Otherwise the installer stores the local time of the build computer, and the
+plugin converts it to UTC as Setup does on the target computer, with the
+current time zone offset of the computer that runs 7-Zip
+(`LocalFileTimeToFileTime`).
+
+Archive properties: the methods (for example `LZMA IF5309`: LZMA, and the call
+instruction filter of Inno Setup 5.3.9 and later for x86 executables), solid,
+physical size, headers size, and a comment with the Inno Setup version, the
+application name and version. Warnings from the setup header parser are shown
+as archive warnings.
+
+7-Zip recognizes installers by their content, so renamed installers (for
+example `setup.bin`) open too, and `-tInno` forces the format. Executables
+that are not Inno Setup installers, including damaged installers whose setup
+headers cannot be read, are declined, so 7-Zip opens them with its other
+handlers (for example as `PE` or as a 7z SFX).
+
+The plugin writes nothing to the console or to disk. For debugging, set the
+environment variable `INNO_PLUGIN_LOG` to a file name before starting 7-Zip;
+the plugin then appends the messages of the setup header parser to that file.
 
 ## Building
 
@@ -60,8 +120,11 @@ skips the test client.
 
 `python3 tests/run_tests.py` compiles the test installers with the Inno Setup
 compilers under Wine, then checks the plugin through the test client and
-through Windows 7-Zip. On Windows it runs with a prebuilt corpus and a 7-Zip
-folder. See [tests/README.md](tests/README.md). The workflow
+through Windows 7-Zip: listing, methods and timestamps, extraction and test
+mode against the payload, a subset in reverse order, skipping existing files,
+progress totals, damaged installers, other executables, and that the plugin
+prints nothing and writes no files. On Windows it runs with a prebuilt corpus
+and a 7-Zip folder. See [tests/README.md](tests/README.md). The workflow
 `.github/workflows/inno-plugin.yml` builds everything and runs the tests on
 Ubuntu (GCC, MinGW, Wine) and Windows (MSVC, official 7-Zip 26.04 x64 and x86).
 
@@ -72,7 +135,7 @@ Tested so far:
 
 | Inno Setup | Tested with |
 |---|---|
-| 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2 | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`), every CI run |
+| 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2 | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`; timestamps in UTC and local time), every CI run |
 | 5.5.0 (Unicode), 6.0.0, 6.2.0 | real installers, checked by the owner with the MSVC build: listing and extraction match the old plugin |
 
 Encrypted or disk-spanning installers and Inno Setup 6.3 or later are not
@@ -80,25 +143,24 @@ supported yet.
 
 ## Known limitations
 
-Inherited from the old plugin; later phases of the rewrite fix them.
-
-- Test mode fails: `7z t`, the Test button and "skip existing files" make
-  `Extract()` return `E_FAIL` (7-Zip shows "Call failed"), because the handler
-  requires an output stream for every item.
-- Progress totals are wrong.
-- Names and comments are converted with the ANSI code page instead of UTF-8,
-  so non-ASCII paths are garbled.
-- The handler writes to the console, writes a log file to the temporary
-  folder on every open, and always sets the warning "Check debug log at: ...".
-- `IsArc_Inno` always returns NO, and the physical size is not reported.
-- The CRC column shows the first 4 bytes of the entry checksum (SHA-1 for the
-  tested versions), not a CRC-32.
-- Cancelling and write errors are reported as a data error of the current
-  item instead of stopping the extraction. Extraction follows the requested
-  order, so going backwards inside a solid chunk restarts decompression, and
-  files that share one data location are buffered whole in memory.
-- No passwords: encrypted files are reported as "Unsupported Method". No disk
-  spanning, no Inno Setup 6.3 or later.
+- No passwords: encrypted files are reported as "Unsupported Method" (Phase
+  5). Disk-spanning installers open, but their files are reported as
+  "Unavailable" (Phase 6). Inno Setup 6.3 or later is not supported yet
+  (Phase 5).
+- Timestamps stored in local time are converted with the current time zone
+  offset of the computer that runs 7-Zip, not the offset of the build
+  computer or of the file's date, as Setup does.
+- The CRC column is filled only for entries with a CRC-32 checksum. The
+  plugin verifies every checksum type (Adler-32, CRC-32, MD5, SHA-1) when it
+  tests or extracts.
+- Entries that share one data location are decoded once and kept in memory
+  for the other entries up to 64 MiB; larger shared data is decoded again for
+  each entry.
+- When only some items are extracted, the progress total also counts the data
+  decoded to reach them inside a solid chunk.
+- A damaged installer reports per-item errors only when its file data is
+  damaged. Inno Setup writes the setup headers after the file data, so a
+  truncated installer cannot be opened at all.
 
 ## Layout
 
