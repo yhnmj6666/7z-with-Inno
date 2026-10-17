@@ -62,7 +62,6 @@
 #include <memory>
 #include <optional>
 
-#define minihead_log_func(sig) ::std::cerr<<(sig)<<::std::endl
 
 #ifdef _MSC_VER
 #define minihead_func_sig __FUNCSIG__
