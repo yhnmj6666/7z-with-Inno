@@ -37,7 +37,9 @@ else()
 endif()
 
 if(WIN32)
-  add_compile_definitions(NOMINMAX)
+  # UNICODE as in upstream 7-Zip (C/Precomp.h); also keeps the Visual Studio
+  # generator from defining _MBCS.
+  add_compile_definitions(NOMINMAX UNICODE _UNICODE)
 else()
   # Same as upstream 7-Zip's GCC build (CPP/7zip/7zip_gcc.mak).
   add_compile_definitions(_REENTRANT _FILE_OFFSET_BITS=64 _LARGEFILE_SOURCE)
@@ -172,8 +174,9 @@ endif()
 if(MINGW)
   target_link_options(Inno PRIVATE -static -static-libgcc -static-libstdc++)
   if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-    # Export undecorated names (CreateObject instead of CreateObject@12).
-    target_link_options(Inno PRIVATE -Wl,--kill-at)
+    # Export undecorated names (CreateObject instead of CreateObject@12);
+    # the .def file lists them undecorated.
+    target_link_options(Inno PRIVATE -Wl,--kill-at -Wl,--enable-stdcall-fixup)
   endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_options(Inno PRIVATE -Wl,--no-undefined)
