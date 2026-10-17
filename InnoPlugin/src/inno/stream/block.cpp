@@ -1,5 +1,6 @@
 // Origin: innoextract src/stream/block.cpp, commit 83c1544b3f (master, 2021-12-02).
-// Modified for the 7-Zip Inno plugin.
+// Modified for the 7-Zip Inno plugin: blocks are read and decompressed into
+// memory with 7-Zip decoders instead of boost::iostreams filters.
 /*
  * Copyright (C) 2011-2019 Daniel Scharrer
  *
@@ -25,28 +26,17 @@
 #include <cstring>
 #include <string>
 #include <istream>
-#include <algorithm>
+#include <sstream>
 
-//#include <boost/cstdint.hpp>
-//#include <boost/iostreams/filtering_stream.hpp>
-//#include <boost/iostreams/restrict.hpp>
-//#include <boost/iostreams/filter/zlib.hpp>
-//#include <boost/iostreams/char_traits.hpp>
-//#include <boost/iostreams/concepts.hpp>
-//#include <boost/iostreams/read.hpp>
-//#include <boost/make_shared.hpp>
+#include "../../InnoBufferDecoder.h"
 
-//#include "../release.hpp"
 #include "../crypto/crc32.hpp"
 #include "../setup/version.hpp"
-#include "../stream/lzma.hpp"
 #include "../util/endian.hpp"
 #include "../util/enum.hpp"
 #include "../util/load.hpp"
 #include "../util/log.hpp"
 #include "../util/math.hpp"
-
-namespace io = boost::iostreams;
 
 namespace stream {
 
@@ -59,44 +49,38 @@ enum block_compression {
 };
 
 /*!
- * A filter that reads a block of 4096-byte chunks where each chunk is preceeded by
- * a CRC32 checksum. The last chunk can be shorter than 4096 bytes.
+ * Reads a block of 4096-byte chunks where each chunk is preceeded by a CRC32 checksum.
+ * The last chunk can be shorter than 4096 bytes.
  *
- * If chunk checksum is wrong a block_error is thrown before any data of that
- * chunk is returned.
- *
- * block_error is also thrown if there is trailing data: 0 < (total size % (4096 + 4)) < 5
+ * block_error is thrown if a chunk checksum is wrong, if the data ends early or if there
+ * is trailing data: 0 < (total size % (4096 + 4)) < 5
  */
-class inno_block_filter : public boost::iostreams::multichar_input_filter {
+void read_block_chunks(std::istream & base, boost::uint32_t stored_size, std::string & data) {
 	
-private:
+	data.clear();
+	data.reserve(stored_size);
 	
-	typedef boost::iostreams::multichar_input_filter base_type;
-	
-public:
-	
-	typedef base_type::char_type char_type;
-	typedef base_type::category category;
-	
-	inno_block_filter() : pos(0), length(0) { }
-	
-	template <typename Source>
-	bool read_chunk(Source & src) {
-
+	char buffer[4096];
+	while(stored_size) {
+		
+		if(stored_size < 5) {
+			throw block_error("unexpected block end");
+		}
+		
 		char temp[sizeof(boost::uint32_t)];
-		std::streamsize temp_size = std::streamsize(sizeof(temp));
-		std::streamsize nread = boost::iostreams::read(src, temp, temp_size);
-		if(nread == EOF) {
-			return false;
-		} else if(size_t(nread) != sizeof(temp)) {
+		base.read(temp, std::streamsize(sizeof(temp)));
+		if(size_t(base.gcount()) != sizeof(temp)) {
 			throw block_error("unexpected block end");
 		}
 		boost::uint32_t block_crc32 = util::little_endian::load<boost::uint32_t>(temp);
+		stored_size -= boost::uint32_t(sizeof(temp));
 		
-		length = size_t(boost::iostreams::read(src, buffer, std::streamsize(sizeof(buffer))));
-		if(length == size_t(EOF)) {
+		size_t length = std::min(size_t(stored_size), sizeof(buffer));
+		base.read(buffer, std::streamsize(length));
+		if(size_t(base.gcount()) != length) {
 			throw block_error("unexpected block end");
 		}
+		stored_size -= boost::uint32_t(length);
 		
 		crypto::crc32 actual;
 		actual.init();
@@ -105,38 +89,9 @@ public:
 			throw block_error("block CRC32 mismatch");
 		}
 		
-		pos = 0;
-		
-		return true;
+		data.append(buffer, length);
 	}
-	
-	template <typename Source>
-	std::streamsize read(Source & src, char * dest, std::streamsize n) {
-		
-		std::streamsize nread = 0;
-		while(n) {
-			
-			if(pos == length && !read_chunk(src)) {
-				return nread ? nread : EOF;
-			}
-			
-			std::streamsize size = std::min(n, std::streamsize(length - pos));
-			
-			std::copy(buffer + pos, buffer + pos + size, dest + nread);
-			
-			pos += size_t(size), n -= size, nread += size;
-		}
-		
-		return nread;
-	}
-	
-private:
-	
-	size_t pos; //! Current read position in the buffer.
-	size_t length; //! Length of the buffer. This is always 4096 except for the last chunk.
-	char buffer[4096];
-	
-};
+}
 
 } // anonymous namespace
 
@@ -195,26 +150,37 @@ block_reader::pointer block_reader::get(std::istream & base, const setup::versio
         *block_size = stored_size;
     }
 	
-	util::unique_ptr<io::filtering_istream>::type fis(new io::filtering_istream);
+	std::string stored;
+	read_block_chunks(base, stored_size, stored);
 	
+	const Byte * stored_data = reinterpret_cast<const Byte *>(stored.data());
+	util::unique_ptr<std::istringstream>::type result(new std::istringstream);
 	switch(compression) {
-		case Stored: break;
-		case Zlib: fis->push(io::zlib_decompressor(), 8192); break;
-	#if INNOEXTRACT_HAVE_LZMA
-		case LZMA1: fis->push(inno_lzma1_decompressor(), 8192); break;
-	#else
-		case LZMA1: throw block_error("LZMA decompression not supported by this "
-			                  + std::string(innoextract_name) + " build");
-	#endif
+		case Stored: {
+			result->str(stored);
+			break;
+		}
+		case Zlib: {
+			std::string decoded;
+			if(!NArchive::NInno::DecodeZlibBuffer(stored_data, stored.size(), decoded)) {
+				throw block_error("zlib decompression error");
+			}
+			result->str(decoded);
+			break;
+		}
+		case LZMA1: {
+			std::string decoded;
+			if(!NArchive::NInno::DecodeLzma1Buffer(stored_data, stored.size(), decoded)) {
+				throw block_error("lzma decompression error");
+			}
+			result->str(decoded);
+			break;
+		}
 	}
 	
-	fis->push(inno_block_filter(), 4096);
+	result->exceptions(std::ios_base::badbit | std::ios_base::failbit);
 	
-	fis->push(io::restrict(base, 0, stored_size));
-	
-	fis->exceptions(std::ios_base::badbit | std::ios_base::failbit);
-	
-	return pointer(fis.release());
+	return pointer(result.release());
 }
 
 } // namespace stream

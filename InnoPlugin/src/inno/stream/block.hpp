@@ -41,7 +41,7 @@ namespace setup { struct version; }
 
 namespace stream {
 
-//! Error thrown by \ref chunk_reader::get or the returned stream if there was a problem.
+//! Error thrown by \ref block_reader::get or the returned stream if there was a problem.
 struct block_error : public std::ios_base::failure {
 	
 	explicit block_error(const std::string & msg) : std::ios_base::failure(msg) { }

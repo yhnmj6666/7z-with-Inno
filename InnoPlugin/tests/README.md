@@ -22,14 +22,17 @@ python3 InnoPlugin/tests/run_tests.py
 The runner:
 
 1. Writes the payload to `build/corpus/payload/` and compiles every script in
-   `corpus/` with every compiler (`iscc-5.6.1-unicode`, `iscc-6.0.5`,
-   `iscc-6.1.2`, `iscc-6.2.2`) into
+   `corpus/` with every compiler (`iscc-5.6.1` (ANSI),
+   `iscc-5.6.1-unicode`, `iscc-6.0.5`, `iscc-6.1.2`, `iscc-6.2.2`) into
    `build/corpus/installers/<compiler>/<variant>.exe`. Each installer has a
    `.key` file with a hash of the compiler name, the scripts and
    `make_payload.py`; an installer is compiled again only when its key changes.
    Installers are never committed.
 2. Test client (`build/linux/inno_client` with `build/linux/Inno.so`): `i`,
-   then `l`, `x` and `t` for every installer.
+   then `l`, `x` and `t` for every installer. For each compiler's stored
+   (`none`) installer, it also flips a byte in `data/random.bin`, extracts with
+   `x`, and requires a per-item `crc_error` while all other payload files still
+   extract byte-identically.
 3. Windows 7-Zip, when a 7-Zip folder and a plugin DLL are given or found
    (default: `/opt/inno-tools/7zip-win64` and
    `build/mingw-x86_64/Inno.64.dll`): the runner copies `7z.exe`, `7z.dll`
@@ -67,7 +70,7 @@ unexpectedly.
 | `--no-client`, `--no-sevenzip` | skip the client or the 7-Zip checks |
 | `--corpus-dir` | corpus folder (default `build/corpus`) |
 | `--no-compile` | use the installers in `--corpus-dir` as they are (their `.key` files must match the scripts) |
-| `--compilers` | comma-separated compiler labels (default: the four above) |
+| `--compilers` | comma-separated compiler labels (default: the five above) |
 | `--work-dir` | scratch folder, emptied on start (default `build/test-work`) |
 
 ### On Windows
@@ -91,9 +94,10 @@ Wine, 7-Zip keeps Wine's own temporary folder).
 
 ## Corpus
 
-`corpus/common.iss` holds the payload and the `[Files]` entries;
-`lzma-solid.iss`, `lzma2-nonsolid.iss` and `none.iss` set the compression and
-include it. The payload (`make_payload.py`) has ASCII names only:
+`corpus/common.iss` holds the payload and the `[Files]` entries. The variant
+scripts cover solid LZMA, non-solid LZMA2, stored (`none`), and both solid and
+non-solid ZIP and BZIP2 compression. Each sets the compression options and
+includes `common.iss`. The payload (`make_payload.py`) has ASCII names only:
 
 - files in nested folders, an empty file, 3 MiB of pseudo-random data
   (SHA-256 in counter mode) and a compressible text file;

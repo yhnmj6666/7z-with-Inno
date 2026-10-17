@@ -1,5 +1,6 @@
 // Origin: innoextract src/stream/file.hpp, commit 83c1544b3f (master, 2021-12-02).
-// Modified for the 7-Zip Inno plugin.
+// Modified for the 7-Zip Inno plugin: the file reader is replaced by
+// CInArchive::ExtractItem (src/InnoIn.cpp).
 #include "../minihead.hpp"
 /*
  * Copyright (C) 2011-2018 Daniel Scharrer
@@ -24,17 +25,12 @@
 /*!
  * \file
  *
- * Wrapper to read a single file from a chunk (\ref stream::chunk_reader).
+ * Information about a single file stored in a chunk.
  */
 #ifndef INNOEXTRACT_STREAM_FILE_HPP
 #define INNOEXTRACT_STREAM_FILE_HPP
 
-#include <istream>
-
-//#include <boost/iostreams/chain.hpp>
-
 #include "../crypto/checksum.hpp"
-#include "../util/unique_ptr.hpp"
 
 namespace stream {
 
@@ -50,8 +46,6 @@ enum compression_filter {
  * Information specifying a single file inside a compressed chunk.
  *
  * This data is stored in \ref setup::data_entry "data entries".
- *
- * Files specified by this struct can be read using \ref file_reader.
  */
 struct file {
 	
@@ -64,38 +58,6 @@ struct file {
 	
 	bool operator<(const file & o) const;
 	bool operator==(const file & o) const;
-	
-};
-
-/*!
- * Wrapper to read a single file from a \ref chunk_reader.
- * Restrics the stream to the file size and applies the appropriate filters.
- */
-class file_reader {
-	
-	typedef boost::iostreams::chain<boost::iostreams::input> base_type;
-	
-public:
-	
-	typedef std::istream                 type;
-	typedef util::unique_ptr<type>::type pointer;
-	typedef file                         file_t;
-	
-	/*!
-	 * Wrap a \ref chunk_reader to read a single file.
-	 *
-	 * Only one wrapper can be used at the same time for each \c base.
-	 *
-	 * \param base     The chunk reader containing the file.
-	 *                 It must already be positioned at the file's offset.
-	 * \param file     Information specifying the file to read.
-	 * \param checksum Optional pointer to a checksum that is updated as the file is read.
-	 *                 The type of the checksum will be the same as that stored in the file
-	 *                 struct.
-	 *
-	 * \return a pointer to a non-seekable input stream for the requested file.
-	 */
-	static pointer get(base_type & base, const file_t & file, crypto::checksum * checksum);
 	
 };
 

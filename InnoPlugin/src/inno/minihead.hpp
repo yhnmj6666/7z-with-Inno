@@ -269,6 +269,5 @@ template<typename T>
 
 }
 
-#include "minihead_iostreams.hpp"
 
 #endif

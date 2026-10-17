@@ -1,5 +1,6 @@
 // Origin: innoextract src/stream/chunk.cpp, commit 83c1544b3f (master, 2021-12-02).
-// Modified for the 7-Zip Inno plugin.
+// Modified for the 7-Zip Inno plugin: the chunk reader is replaced by
+// NArchive::NInno::CChunkDecoder (src/InnoDecoder.cpp).
 /*
  * Copyright (C) 2011-2019 Daniel Scharrer
  *
@@ -22,77 +23,7 @@
 
 #include "./chunk.hpp"
 
-#include <cstring>
-
-//#include <boost/iostreams/char_traits.hpp>
-//#include <boost/iostreams/concepts.hpp>
-//#include <boost/iostreams/read.hpp>
-//#include <boost/iostreams/filter/bzip2.hpp>
-//#include <boost/iostreams/filter/zlib.hpp>
-//#include <boost/make_shared.hpp>
-//#include <boost/range/size.hpp>
-
-//#include "../release.hpp"
-#include "../crypto/arc4.hpp"
-#include "../crypto/checksum.hpp"
-#include "../crypto/hasher.hpp"
-#include "../stream/lzma.hpp"
-#include "../stream/restrict.hpp"
-#include "../stream/slice.hpp"
-#include "../util/log.hpp"
-
-
-namespace io = boost::iostreams;
-
 namespace stream {
-
-namespace {
-
-const char chunk_id[4] = { 'z', 'l', 'b', 0x1a };
-
-#if INNOEXTRACT_HAVE_ARC4
-
-/*!
- * Filter to en-/decrypt files files stored by Inno Setup.
- */
-class inno_arc4_crypter : public boost::iostreams::multichar_input_filter {
-	
-private:
-	
-	typedef boost::iostreams::multichar_input_filter base_type;
-	
-public:
-	
-	typedef base_type::char_type char_type;
-	typedef base_type::category category;
-	
-	inno_arc4_crypter(const char * key, size_t length) {
-		
-		arc4.init(key, length);
-		arc4.discard(1000);
-		
-	}
-	
-	template <typename Source>
-	std::streamsize read(Source & src, char * dest, std::streamsize n) {
-		
-		std::streamsize length = boost::iostreams::read(src, dest, n);
-		if(length != EOF) {
-			arc4.crypt(dest, dest, size_t(n));
-		}
-		
-		return length;
-	}
-	
-private:
-	
-	crypto::arc4 arc4;
-	
-};
-
-#endif // INNOEXTRACT_HAVE_ARC4
-
-} // anonymous namespace
 
 bool chunk::operator<(const chunk & o) const {
 	
@@ -117,58 +48,6 @@ bool chunk::operator==(const chunk & o) const {
 	        && size == o.size
 	        && compression == o.compression
 	        && encryption == o.encryption);
-}
-
-chunk_reader::pointer chunk_reader::get(slice_reader & base, const chunk & chunk , const std::string & key) {
-	
-	if(!base.seek(chunk.first_slice, chunk.offset)) {
-		throw chunk_error("could not seek to chunk start");
-	}
-	
-	char magic[sizeof(chunk_id)];
-	if(base.read(magic, 4) != 4 || std::memcmp(magic, chunk_id, sizeof(chunk_id)) != 0) {
-		throw chunk_error("bad chunk magic");
-	}
-	
-	pointer result(new boost::iostreams::chain<boost::iostreams::input>);
-	
-	switch(chunk.compression) {
-		case Stored: break;
-		case Zlib:   result->push(io::zlib_decompressor(), 8192); break;
-		case BZip2:  result->push(io::bzip2_decompressor(), 8192); break;
-	#if INNOEXTRACT_HAVE_LZMA
-		case LZMA1:  result->push(inno_lzma1_decompressor(), 8192); break;
-		case LZMA2:  result->push(inno_lzma2_decompressor(), 8192); break;
-	#else
-		case LZMA1: case LZMA2:
-			throw chunk_error("LZMA decompression not supported by this "
-			                  + std::string(innoextract_name) + " build");
-	#endif
-		default: throw chunk_error("unknown chunk compression");
-	}
-	
-	if(chunk.encryption != Plaintext) {
-		#if INNOEXTRACT_HAVE_ARC4
-		char salt[8];
-		if(base.read(salt, 8) != 8) {
-			throw chunk_error("could not read chunk salt");
-		}
-		crypto::hasher hasher(chunk.encryption == ARC4_SHA1 ? crypto::SHA1 : crypto::MD5);
-		hasher.update(salt, sizeof(salt));
-		hasher.update(key.c_str(), key.length());
-		crypto::checksum checksum = hasher.finalize();
-		const char * salted_key = chunk.encryption == ARC4_SHA1 ? checksum.sha1 : checksum.md5;
-		size_t key_length = chunk.encryption == ARC4_SHA1 ? sizeof(checksum.sha1) : sizeof(checksum.md5);
-		result->push(inno_arc4_crypter(salted_key, key_length), 8192);
-		#else
-		(void)key;
-		throw chunk_error("ARC4 decryption not supported");
-		#endif
-	}
-	
-	result->push(restrict(base, chunk.size));
-	
-	return result;
 }
 
 } // namespace stream
