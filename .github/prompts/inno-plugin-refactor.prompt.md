@@ -12,13 +12,14 @@ Owner prerequisites: the repository default branch must contain `.github/workflo
 
 Open, list, test and extract Inno Setup installers in stock 7-Zip (7z.exe, 7zG.exe, 7zFM.exe) through a format plugin DLL that users copy into `<7-Zip folder>\Formats\`. 7-Zip updates must never require rebuilding the plugin. The current code works but is a quick port with known defects; rewrite it into a maintainable, well-tested plugin.
 
-## 2. Current state (main at 5bb65f0)
+## 2. Current state
 
-- This repository is a git copy of the 7-Zip 22.00 source tree with an Inno Setup handler added:
+- Phases 1 and 2 are done (#1): `InnoPlugin/` holds the standalone plugin (vendored 7-Zip 26.04, CMake build, test client, corpus, CI), with the handler in `InnoPlugin/src/` and the innoextract port in `InnoPlugin/src/inno/`. Phases 3 to 6 change this code; the problems in section 3 still apply to it. The original code below stays under `CPP/` as the parity reference until Phase 6.
+- The original code: this repository is a git copy of the 7-Zip 22.00 source tree with an Inno Setup handler added:
   - `CPP/7zip/Archive/Inno/` - 7-Zip glue: `InnoHandler.cpp` (IInArchive), `InnoIn.*` (CInArchive, CEmbeddedFiles), `InnoInterop.*` (std::streambuf over IInStream, progress writer), `InnoItem.*`, `InnoRegister.cpp` (`REGISTER_ARC_I_NO_SIG("Inno", "exe", 0, 0x70, ...)`, flags `kPureStartOpen | kUseGlobalOffset`).
   - `CPP/7zip/Archive/Inno/InnoExtract/` - partial port of innoextract (https://github.com/dscharrer/innoextract, zlib license), copied in 2022 from master at commit `83c1544b3f` (2021-12-02, newer than release 1.9); the owner later applied the equivalent of upstream fix `325a7c9655` to `crypto/iteratedhash.hpp`. Boost is replaced by shims written for this repository (`minihead.hpp`, `minihead_iostreams.hpp`); LZMA comes from prebuilt MSVC liblzma libraries (`liblzma/lib/*.lib`, DLL CRT). `cli/` is not compiled, and `lib/magic_enum.hpp` is included by `InnoIn.cpp` but unused.
   - `CPP/7zip/Bundles/InnoPlugin/InnoPlugin.vcxproj` - builds the plugin (`Inno.64.dll`, `Inno.32.dll`), MSVC 2022 only, against this repository's 7-Zip 22.00 sources. See the "Inno Setup plugin" section of `README.md`.
-- The owner verified the plugin on Windows with 7-Zip 25.01: 15 real installers (Inno Setup 5.0.4 to 6.2.0, signed and unsigned) list and extract correctly. Those installers are third-party software and must never be added to this public repository.
+- The owner verifies releases locally with 15 real installers (Inno Setup 5.0.4 to 6.2, signed and unsigned): the original plugin with 7-Zip 25.01, and the Phase 1-2 build with the official 7-Zip 26.04 x64 and x86, which lists and extracts them byte-identically to the original. Those installers are third-party software and must never be added to this public repository.
 - How 7-Zip picks the handler: 7-Zip sorts formats by name (case-sensitive) and offers a file to every format registered for its extension, in that order. `Inno` is registered for `exe` and sorts before `PE`, so it gets the first try on every `.exe`, including signed installers that `PE` would otherwise claim. Consequences: keep the format name `Inno`, and make `Open()` reject non-Inno executables quickly and silently with `S_FALSE`.
 - The older "built into 7z.dll" integration is still present (`CPP/7zip/Bundles/Format7zF/Format7z.vcxproj`, plus two hacks in the 7-Zip tree: `CPP/7zip/Archive/IArchive.h` flips `#ifdef _MSC_VER` to `#ifndef` around `MY_NO_THROW_DECL_ONLY`, and `CPP/7zip/UI/FileManager/resource.rc` comments out the manifest). It is retired in Phase 6.
 
@@ -134,14 +135,14 @@ The setup ends with a smoke test that compiles a one-file installer with every c
 
 ## 8. Phases
 
-### Phase 1 - Standalone core on Linux (simplest working version)
+### Phase 1 - Standalone core on Linux (simplest working version; done in #1)
 
 - Create `InnoPlugin/` with the vendored 7-Zip 26.04 subset, the CMake build (GCC), the test client, the runner, `InnoPlugin/README.md` (build and test instructions) and the `ubuntu-24.04` CI job.
 - Move the current handler and innoextract port into the new layout with minimal changes: port the glue to the 26.04 interfaces, make it compile with GCC, and replace liblzma with `C/LzmaDec.c` and `C/Lzma2Dec.c`. Keep all other behavior, including the known problems.
 - Corpus: `lzma` (solid), `lzma2` (non-solid) and `none`, built with `5.6.1-unicode`, `6.0.5`, `6.1.2` and `6.2.2`.
 - Done when: `python3 InnoPlugin/tests/run_tests.py` passes in the session and in the Ubuntu CI job, and the old code in `CPP/` is untouched.
 
-### Phase 2 - Windows plugin builds and end-to-end tests
+### Phase 2 - Windows plugin builds and end-to-end tests (done in #1)
 
 - Build `Inno.32.dll` and `Inno.64.dll` from the same CMake project with MSVC (static CRT, `/W4 /WX`) and MinGW (x86_64 and i686), with the export set from section 4.
 - End-to-end tests through real 7-Zip: the x64 MinGW DLL in `7z-win`'s `Formats` folder in the session and the Ubuntu job, and the MSVC DLLs in the official 7-Zip 26.04 (x64 and x86 installers) in the new `windows-2022` job.
