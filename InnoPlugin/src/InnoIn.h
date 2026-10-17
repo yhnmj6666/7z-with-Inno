@@ -60,7 +60,7 @@ public:
   CInArchive(): FileSize(0), PhySize(0), IsSolid(false) {}
 
   // Returns S_FALSE if the stream is not an Inno Setup installer that can be
-  // opened.
+  // opened, or the error of the stream if reading it failed.
   HRESULT Open(IInStream *stream);
   void Clear();
 

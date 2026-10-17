@@ -118,6 +118,15 @@ static bool GetFileTime(const setup::data_entry &entry, FILETIME &ft)
   const UInt64 v = (UInt64)entry.timestamp * 10000000 + entry.timestamp_nsec / 100 + kUnixEpoch;
   ft.dwLowDateTime = (DWORD)v;
   ft.dwHighDateTime = (DWORD)(v >> 32);
+  // Without TimeStampInUTC (TimeStampsInUTC=no, the default before Inno
+  // Setup 7, and all DOS times) the entry holds the local time of the build
+  // machine, which Setup converts like this.
+  if ((entry.options & setup::data_entry::TimeStampInUTC) == 0)
+  {
+    const FILETIME local = ft;
+    if (!LocalFileTimeToFileTime(&local, &ft))
+      return false;
+  }
   return true;
 }
 

@@ -16,7 +16,8 @@ static const size_t kBufSize = (size_t)1 << 16;
 CInStreamBuf::CInStreamBuf(IInStream *stream):
     _stream(stream),
     _buf(kBufSize),
-    _bufPos(0)
+    _bufPos(0),
+    _error(S_OK)
 {
   setg(BufStart(), BufStart(), BufStart());
 }
@@ -51,7 +52,7 @@ std::streambuf::pos_type CInStreamBuf::seekoff(off_type off, std::ios_base::seek
       base = GetCurPos();
       break;
     case std::ios_base::end:
-      if (_stream->Seek(0, STREAM_SEEK_END, &base) != S_OK)
+      if (SetError(_stream->Seek(0, STREAM_SEEK_END, &base)))
         return kError;
       break;
     default:
@@ -86,11 +87,10 @@ std::streambuf::int_type CInStreamBuf::underflow()
     return traits_type::to_int_type(*gptr());
   _bufPos = GetCurPos();
   setg(BufStart(), BufStart(), BufStart());
-  if (InStream_SeekSet(_stream, _bufPos) != S_OK)
+  if (SetError(InStream_SeekSet(_stream, _bufPos)))
     return traits_type::eof();
   size_t size = kBufSize;
-  ReadStream(_stream, _buf, &size);
-  if (size == 0)
+  if (SetError(ReadStream(_stream, _buf, &size)) || size == 0)
     return traits_type::eof();
   setg(BufStart(), BufStart(), BufStart() + size);
   return traits_type::to_int_type(*gptr());
@@ -116,10 +116,11 @@ std::streamsize CInStreamBuf::xsgetn(char_type *s, std::streamsize count)
       // Large reads bypass the buffer.
       _bufPos = GetCurPos();
       setg(BufStart(), BufStart(), BufStart());
-      if (InStream_SeekSet(_stream, _bufPos) != S_OK)
+      if (SetError(InStream_SeekSet(_stream, _bufPos)))
         break;
       size_t size = rem;
-      ReadStream(_stream, s + done, &size);
+      if (SetError(ReadStream(_stream, s + done, &size)))
+        break;
       _bufPos += size;
       done += (std::streamsize)size;
       break;

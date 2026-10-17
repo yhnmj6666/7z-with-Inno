@@ -15,16 +15,26 @@ namespace NArchive {
 namespace NInno {
 
 // Reads through a 64 KiB buffer. Seeks inside the buffered data do not access
-// the stream. A read error ends the data like the end of the stream.
+// the stream. A seek or read error ends the data like the end of the stream;
+// GetError() returns the first one.
 class CInStreamBuf: public std::streambuf
 {
   CMyComPtr<IInStream> _stream;
   CByteBuffer _buf;
   UInt64 _bufPos; // stream position of eback()
+  HRESULT _error;
 
   char *BufStart() { return (char *)(Byte *)_buf; }
   UInt64 GetCurPos() const { return _bufPos + (UInt64)(gptr() - eback()); }
   pos_type SeekTo(UInt64 pos);
+  bool SetError(HRESULT res)
+  {
+    if (res == S_OK)
+      return false;
+    if (_error == S_OK)
+      _error = res;
+    return true;
+  }
 
 protected:
   pos_type seekoff(off_type off, std::ios_base::seekdir dir,
@@ -35,6 +45,7 @@ protected:
 
 public:
   explicit CInStreamBuf(IInStream *stream);
+  HRESULT GetError() const { return _error; }
 };
 
 }}

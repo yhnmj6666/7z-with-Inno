@@ -2,6 +2,8 @@
 
 #include "StdAfx.h"
 
+#include <string.h>
+
 #include "CPP/Common/UTFConvert.h"
 #include "CPP/7zip/Archive/IArchive.h"
 #include "CPP/7zip/Common/StreamUtils.h"
@@ -78,56 +80,6 @@ AString GetMethodString(const setup::data_entry &entry)
   return s;
 }
 
-static std::string ToLowerAscii(const std::string &s)
-{
-  std::string r(s);
-  for (size_t i = 0; i < r.size(); i++)
-    if (r[i] >= 'A' && r[i] <= 'Z')
-      r[i] = (char)(r[i] - 'A' + 'a');
-  return r;
-}
-
-// A component or language expression that is a single name.
-static bool IsSimpleName(const std::string &s)
-{
-  if (s.empty())
-    return false;
-  for (size_t i = 0; i < s.size(); i++)
-  {
-    const char c = s[i];
-    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '-')
-      continue;
-    if (i != 0 && c >= '0' && c <= '9')
-      continue;
-    return false;
-  }
-  return true;
-}
-
-// Inserts suffix before the extension of the file name in path.
-static std::string InsertSuffix(const std::string &path, const std::string &suffix)
-{
-  if (suffix.empty())
-    return path;
-  const size_t sep = path.rfind('\\');
-  const size_t nameStart = (sep == std::string::npos) ? 0 : sep + 1;
-  const size_t dot = path.rfind('.');
-  if (dot == std::string::npos || dot <= nameStart)
-    return path + suffix;
-  return path.substr(0, dot) + suffix + path.substr(dot);
-}
-
-static std::string GetArchSuffix(const setup::file_entry &file)
-{
-  const bool bits32 = (file.options & setup::file_entry::Bits32) != 0;
-  const bool bits64 = (file.options & setup::file_entry::Bits64) != 0;
-  if (bits32 && !bits64)
-    return "@32bit";
-  if (bits64 && !bits32)
-    return "@64bit";
-  return std::string();
-}
-
 void CInArchive::Clear()
 {
   Stream.Release();
@@ -197,12 +149,241 @@ void CInArchive::BuildExtraFiles()
 
 /*
 Item names: files that have data in the installer keep their destination path
-("{app}\file.txt"), extra files are listed under "embedded\". Files with the
-same destination (ignoring case) get a suffix before the extension that
-describes how they differ: "#component", "@language" and "@32bit" / "@64bit"
-for simple conditions that are not the same for all of them. Then every name
-that is still taken gets "$1", "$2", ... in the order of the items.
+("{app}\file.txt"), extra files are listed under "embedded\". File names are
+never changed. Files whose destinations are the same ignoring case get leading
+folders, one for each property that differs within the group, in this order:
+  "{x86}", "{x64}" or "{arm64}": the architecture of the Check parameter, or
+      of the 32bit / 64bit flags if the Check parameter does not select one,
+  "{#component}": a Components parameter that is a single name,
+  "{@language}": a Languages parameter that is a single name.
+Then items whose paths are still taken get "{$1}", "{$2}", ... in item order.
 */
+
+static const unsigned kArch_x86 = 1 << 0;
+static const unsigned kArch_x64 = 1 << 1;
+static const unsigned kArch_arm64 = 1 << 2;
+static const unsigned kArch_All = kArch_x86 | kArch_x64 | kArch_arm64;
+
+static const struct
+{
+  const char *Name;
+  unsigned Archs; // architectures where the function returns true
+} kArchFunctions[] =
+{
+  { "Is64BitInstallMode", kArch_x64 | kArch_arm64 },
+  { "IsWin64", kArch_x64 | kArch_arm64 },
+  { "IsX64Compatible", kArch_x64 | kArch_arm64 },
+  { "IsX64", kArch_x64 },
+  { "IsX64OS", kArch_x64 },
+  { "IsARM64", kArch_arm64 },
+  { "IsX86", kArch_x86 },
+  { "IsX86OS", kArch_x86 },
+  { "IsX86Compatible", kArch_All }
+};
+
+static bool IsIdentStart(char c)
+{
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static bool IsIdentChar(char c)
+{
+  return IsIdentStart(c) || (c >= '0' && c <= '9');
+}
+
+// Evaluates a Check expression of the functions in kArchFunctions, "and",
+// "or", "not" and parentheses for all architectures at once: each value is
+// the set of architectures where it is true.
+class CCheckEvaluator
+{
+  const char *_cur;
+  const char *_end;
+  std::string _token; // identifier, "(" or ")"; empty at the end
+  bool _error;
+
+  void Next();
+  bool IsToken(const char *s) const { return StringsAreEqualNoCase_Ascii(_token.c_str(), s); }
+  unsigned ParseOr(unsigned depth);
+  unsigned ParseAnd(unsigned depth);
+  unsigned ParseFactor(unsigned depth);
+  unsigned SetError() { _error = true; return 0; }
+
+public:
+  // Returns false if the expression uses anything else.
+  bool Evaluate(const std::string &expr, unsigned &archs);
+};
+
+void CCheckEvaluator::Next()
+{
+  while (_cur != _end && (*_cur == ' ' || *_cur == '\t' || *_cur == '\r' || *_cur == '\n'))
+    _cur++;
+  _token.clear();
+  if (_cur == _end)
+    return;
+  const char *start = _cur;
+  if (*_cur == '(' || *_cur == ')')
+    _cur++;
+  else if (IsIdentStart(*_cur))
+  {
+    while (_cur != _end && IsIdentChar(*_cur))
+      _cur++;
+  }
+  else
+  {
+    _error = true;
+    _cur = _end;
+    return;
+  }
+  _token.assign(start, _cur);
+}
+
+unsigned CCheckEvaluator::ParseOr(unsigned depth)
+{
+  unsigned archs = ParseAnd(depth);
+  while (!_error && IsToken("or"))
+  {
+    Next();
+    archs |= ParseAnd(depth);
+  }
+  return archs;
+}
+
+unsigned CCheckEvaluator::ParseAnd(unsigned depth)
+{
+  unsigned archs = ParseFactor(depth);
+  while (!_error && IsToken("and"))
+  {
+    Next();
+    archs &= ParseFactor(depth);
+  }
+  return archs;
+}
+
+unsigned CCheckEvaluator::ParseFactor(unsigned depth)
+{
+  const unsigned kMaxDepth = 64;
+  if (_error || depth >= kMaxDepth)
+    return SetError();
+  if (IsToken("("))
+  {
+    Next();
+    const unsigned archs = ParseOr(depth + 1);
+    if (_error || !IsToken(")"))
+      return SetError();
+    Next();
+    return archs;
+  }
+  if (IsToken("not"))
+  {
+    Next();
+    return ~ParseFactor(depth + 1) & kArch_All;
+  }
+  for (unsigned i = 0; i < Z7_ARRAY_SIZE(kArchFunctions); i++)
+    if (IsToken(kArchFunctions[i].Name))
+    {
+      Next();
+      if (IsToken("("))
+      {
+        // Only a call without arguments.
+        Next();
+        if (!IsToken(")"))
+          return SetError();
+        Next();
+      }
+      return kArchFunctions[i].Archs;
+    }
+  return SetError();
+}
+
+bool CCheckEvaluator::Evaluate(const std::string &expr, unsigned &archs)
+{
+  _cur = expr.c_str();
+  _end = _cur + expr.size();
+  _error = false;
+  Next();
+  archs = ParseOr(0);
+  return !_error && _token.empty();
+}
+
+static const char *GetArchName(const setup::file_entry &file)
+{
+  unsigned archs = 0;
+  CCheckEvaluator evaluator;
+  if (evaluator.Evaluate(file.check, archs))
+  {
+    if (archs == kArch_x86)
+      return "x86";
+    if (archs == kArch_x64 || archs == (kArch_x64 | kArch_arm64))
+      return "x64";
+    if (archs == kArch_arm64)
+      return "arm64";
+  }
+  const bool bits32 = (file.options & setup::file_entry::Bits32) != 0;
+  const bool bits64 = (file.options & setup::file_entry::Bits64) != 0;
+  if (bits64 && !bits32)
+    return "x64";
+  if (bits32 && !bits64)
+    return "x86";
+  return NULL;
+}
+
+// Returns the name if expr is a single component or language name, as Inno
+// Setup checks them: letters, digits and "_", not starting with a digit.
+// Component names can contain "\" for subcomponents.
+static std::string GetSingleName(const std::string &expr, bool isComponent)
+{
+  const size_t start = expr.find_first_not_of(" \t");
+  if (start == std::string::npos)
+    return std::string();
+  const size_t end = expr.find_last_not_of(" \t") + 1;
+  const std::string name = expr.substr(start, end - start);
+  if (StringsAreEqualNoCase_Ascii(name.c_str(), "not")
+      || StringsAreEqualNoCase_Ascii(name.c_str(), "and")
+      || StringsAreEqualNoCase_Ascii(name.c_str(), "or"))
+    return std::string();
+  for (size_t i = 0; i < name.size(); i++)
+  {
+    const char c = name[i];
+    if (IsIdentStart(c) || (i != 0 && c >= '0' && c <= '9'))
+      continue;
+    if (isComponent && i != 0 && i + 1 != name.size() && (c == '\\' || c == '/'))
+      continue;
+    return std::string();
+  }
+  return name;
+}
+
+// Replaces characters that Windows does not allow in file names.
+static void SanitizeLabel(std::string &s)
+{
+  for (size_t i = 0; i < s.size(); i++)
+  {
+    const unsigned char c = (unsigned char)s[i];
+    if (c < 0x20 || strchr("<>:\"/\\|?*", c))
+      s[i] = '_';
+  }
+}
+
+// Paths that differ only in case are the same file on Windows. Other hosts
+// ignore the case of ASCII letters only, so that the names do not depend on
+// the locale.
+static std::wstring GetPathKey(const UString &path)
+{
+  std::wstring key;
+  key.reserve(path.Len());
+  for (unsigned i = 0; i < path.Len(); i++)
+  {
+    wchar_t c = path[i];
+    #ifdef _WIN32
+    c = MyCharUpper(c);
+    #else
+    if (c >= 'a' && c <= 'z')
+      c = (wchar_t)(c - 0x20);
+    #endif
+    key += c;
+  }
+  return key;
+}
 
 void CInArchive::BuildItems()
 {
@@ -210,86 +391,99 @@ void CInArchive::BuildItems()
   for (size_t i = 0; i < Info.files.size(); i++)
     if (Info.files[i].location < Info.data_entries.size())
       files.push_back(i);
+  const size_t numItems = files.size() + Extras.size();
 
-  std::vector<std::string> names(files.size());
-  std::map<std::string, std::vector<size_t> > groups;
-  for (size_t k = 0; k < files.size(); k++)
+  std::vector<UString> dests(numItems);
+  for (size_t k = 0; k < numItems; k++)
   {
-    names[k] = Info.files[files[k]].destination;
-    groups[ToLowerAscii(names[k])].push_back(k);
+    if (k < files.size())
+      Utf8ToUnicode(Info.files[files[k]].destination, dests[k]);
+    else
+      Utf8ToUnicode("embedded\\" + Extras[k - files.size()].Name, dests[k]);
   }
 
-  for (std::map<std::string, std::vector<size_t> >::const_iterator it = groups.begin();
+  std::vector<std::string> folders(numItems);
+  std::map<std::wstring, std::vector<size_t> > groups;
+  for (size_t k = 0; k < files.size(); k++)
+    groups[GetPathKey(dests[k])].push_back(k);
+  for (std::map<std::wstring, std::vector<size_t> >::const_iterator it = groups.begin();
       it != groups.end(); ++it)
   {
     const std::vector<size_t> &group = it->second;
     if (group.size() < 2)
       continue;
-    const setup::file_entry &first = Info.files[files[group[0]]];
-    bool sameComponents = true;
-    bool sameLanguages = true;
-    bool sameArch = true;
-    for (size_t j = 1; j < group.size(); j++)
-    {
-      const setup::file_entry &file = Info.files[files[group[j]]];
-      sameComponents = sameComponents && (file.components == first.components);
-      sameLanguages = sameLanguages && (file.languages == first.languages);
-      sameArch = sameArch && (GetArchSuffix(file) == GetArchSuffix(first));
-    }
+    const unsigned kNumProps = 3;
+    static const char * const kPrefixes[kNumProps] = { "{", "{#", "{@" };
+    std::vector<std::string> labels[kNumProps];
     for (size_t j = 0; j < group.size(); j++)
     {
       const setup::file_entry &file = Info.files[files[group[j]]];
-      std::string suffix;
-      if (!sameComponents && IsSimpleName(file.components))
-        suffix += "#" + file.components;
-      if (!sameLanguages && IsSimpleName(file.languages))
-        suffix += "@" + file.languages;
-      if (!sameArch)
-        suffix += GetArchSuffix(file);
-      names[group[j]] = InsertSuffix(names[group[j]], suffix);
+      const char *arch = GetArchName(file);
+      labels[0].push_back(arch ? arch : "");
+      labels[1].push_back(GetSingleName(file.components, true));
+      labels[2].push_back(GetSingleName(file.languages, false));
+    }
+    for (unsigned p = 0; p < kNumProps; p++)
+    {
+      bool differ = false;
+      for (size_t j = 1; j < group.size(); j++)
+        if (!StringsAreEqualNoCase_Ascii(labels[p][j].c_str(), labels[p][0].c_str()))
+          differ = true;
+      if (!differ)
+        continue;
+      for (size_t j = 0; j < group.size(); j++)
+      {
+        std::string label = labels[p][j];
+        if (label.empty())
+          continue;
+        SanitizeLabel(label);
+        folders[group[j]] += kPrefixes[p] + label + "}\\";
+      }
     }
   }
 
-  std::set<std::string> used;
-  Items.reserve(files.size() + Extras.size());
-  for (size_t k = 0; k < files.size() + Extras.size(); k++)
+  std::set<std::wstring> used;
+  std::map<std::wstring, unsigned> lastNumbers;
+  Items.reserve(numItems);
+  for (size_t k = 0; k < numItems; k++)
   {
     CItem item;
-    std::string name;
-    if (k < files.size())
+    UString folder;
+    Utf8ToUnicode(folders[k], folder);
+    item.Path = folder + dests[k];
+    const std::wstring key = GetPathKey(item.Path);
+    if (!used.insert(key).second)
     {
-      const setup::file_entry &file = Info.files[files[k]];
-      name = names[k];
-      item.FileIndex = (int)files[k];
-      item.ExtraIndex = 0;
-      item.Size = Info.data_entries[file.location].file.size;
-    }
-    else
-    {
-      const CExtraFile &extra = Extras[k - files.size()];
-      name = "embedded\\" + extra.Name;
-      item.FileIndex = -1;
-      item.ExtraIndex = (unsigned)(k - files.size());
-      item.Size = extra.GetData().size();
-    }
-    if (!used.insert(ToLowerAscii(name)).second)
-    {
-      for (unsigned n = 1;; n++)
+      unsigned &n = lastNumbers[key];
+      for (;;)
       {
-        std::ostringstream suffix;
-        suffix << '$' << n;
-        const std::string candidate = InsertSuffix(name, suffix.str());
-        if (used.insert(ToLowerAscii(candidate)).second)
+        UString path = folder;
+        path += "{$";
+        path.Add_UInt32(++n);
+        path += "}\\";
+        path += dests[k];
+        if (used.insert(GetPathKey(path)).second)
         {
-          name = candidate;
+          item.Path = path;
           break;
         }
       }
     }
-    Utf8ToUnicode(name, item.Path);
     #if WCHAR_PATH_SEPARATOR != L'\\'
     item.Path.Replace(L'\\', WCHAR_PATH_SEPARATOR);
     #endif
+    if (k < files.size())
+    {
+      item.FileIndex = (int)files[k];
+      item.ExtraIndex = 0;
+      item.Size = Info.data_entries[Info.files[files[k]].location].file.size;
+    }
+    else
+    {
+      item.FileIndex = -1;
+      item.ExtraIndex = (unsigned)(k - files.size());
+      item.Size = Extras[item.ExtraIndex].GetData().size();
+    }
     Items.push_back(item);
   }
 }
@@ -375,10 +569,10 @@ HRESULT CInArchive::Open(IInStream *stream)
     return S_FALSE;
 
   bool ok = false;
+  CInStreamBuf streamBuf(stream);
   log_capture capture;
   try
   {
-    CInStreamBuf streamBuf(stream);
     std::istream is(&streamBuf);
     Offsets.load(is);
     if (Offsets.found_magic)
@@ -419,7 +613,9 @@ HRESULT CInArchive::Open(IInStream *stream)
   if (!ok)
   {
     Clear();
-    return S_FALSE;
+    // A read error or E_ABORT from the stream ends the data while parsing.
+    const HRESULT res = streamBuf.GetError();
+    return res != S_OK ? res : S_FALSE;
   }
 
   Stream = stream;
