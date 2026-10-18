@@ -245,10 +245,18 @@ HRESULT CInArchive::OpenSlices(IArchiveOpenCallback *callback)
     if (entry.file.size != 0 && numSlices < (size_t)entry.chunk.last_slice + 1)
       numSlices = (size_t)entry.chunk.last_slice + 1;
   }
-  // The slices per disk is at most 26 ("a" to "z").
+  // The slices per disk is at most 26 ("a" to "z"). Damaged headers can
+  // give any slice number: more than 65536 slices (16 GiB with the smallest
+  // DiskSliceSize) are not looked up, so their files are unavailable.
+  const size_t kMaxSlices = (size_t)1 << 16;
   const size_t slicesPerDisk = Info.header.slices_per_disk;
   if (numSlices == 0 || slicesPerDisk > 26)
     return S_OK;
+  if (numSlices > kMaxSlices)
+  {
+    Warnings.push_back("Too many slices");
+    return S_OK;
+  }
 
   CMyComPtr<IArchiveOpenVolumeCallback> volumeCallback;
   if (callback)
@@ -275,6 +283,8 @@ HRESULT CInArchive::OpenSlices(IArchiveOpenCallback *callback)
     std::swap(base, base2);
 
   Slices.resize(numSlices);
+  const size_t kMaxMissingWarnings = 8;
+  size_t numMissing = 0;
   for (size_t i = 0; i < numSlices; i++)
   {
     UString names[2];
@@ -312,12 +322,16 @@ HRESULT CInArchive::OpenSlices(IArchiveOpenCallback *callback)
       Slices[i].Size = size;
       Slices[i].HeaderSize = headerSize;
     }
-    if (!Slices[i].Stream)
+    if (!Slices[i].Stream && ++numMissing <= kMaxMissingWarnings)
     {
       AString name;
       ConvertUnicodeToUTF8(names[base.IsEmpty() ? 1 : 0], name);
       Warnings.push_back(std::string("Missing slice: ") + name.Ptr());
     }
+  }
+  if (numMissing > kMaxMissingWarnings)
+  {
+    Warnings.push_back("Missing slices: " + std::to_string(numMissing - kMaxMissingWarnings) + " more");
   }
   return S_OK;
 }
