@@ -1,5 +1,6 @@
 // Origin: innoextract src/util/log.cpp, commit 83c1544b3f (master, 2021-12-02).
-// Modified for the 7-Zip Inno plugin.
+// Modified for the 7-Zip Inno plugin: messages never go to the console; they
+// are collected per thread (log_capture) or written to an opt-in debug log.
 /*
  * Copyright (C) 2011-2019 Daniel Scharrer
  *
@@ -22,53 +23,112 @@
 
 #include "../util/log.hpp"
 
-#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
 
-#include "../util/console.hpp"
+namespace {
 
-bool logger::debug = true;
-bool logger::quiet = false;
+//! Innermost log_capture of the current thread.
+thread_local log_capture * current_capture = NULL;
 
-size_t logger::total_errors = 0;
-size_t logger::total_warnings = 0;
-std::optional<std::filesystem::path> logger::log_path;
+/*!
+ * The debug log file, from the INNO_PLUGIN_LOG environment variable.
+ * Read once per process; empty if the variable is not set.
+ */
+#ifdef _WIN32
+const std::wstring & debug_log_path() {
+	static const std::wstring path = [] {
+		const wchar_t * value = _wgetenv(L"INNO_PLUGIN_LOG");
+		return std::wstring(value ? value : L"");
+	}();
+	return path;
+}
+#else
+const std::string & debug_log_path() {
+	static const std::string path = [] {
+		const char * value = getenv("INNO_PLUGIN_LOG");
+		return std::string(value ? value : "");
+	}();
+	return path;
+}
+#endif
+
+void write_debug_log(logger::log_level level, const std::string & message) {
+	
+	if(debug_log_path().empty()) {
+		return;
+	}
+	
+	#ifdef _WIN32
+	FILE * file = _wfopen(debug_log_path().c_str(), L"ab");
+	#else
+	FILE * file = fopen(debug_log_path().c_str(), "ab");
+	#endif
+	if(!file) {
+		return;
+	}
+	
+	const char * prefix = "";
+	switch(level) {
+		case logger::Debug:   prefix = "debug: "; break;
+		case logger::Info:    prefix = "info: "; break;
+		case logger::Warning: prefix = "warning: "; break;
+		case logger::Error:   prefix = "error: "; break;
+	}
+	
+	std::string line = prefix + message + "\n";
+	fwrite(line.data(), 1, line.size(), file);
+	fclose(file);
+}
+
+} // anonymous namespace
+
+bool logger::debug_enabled() {
+	return !debug_log_path().empty();
+}
+
+void logger::emit(log_level level, const std::string & message) {
+	if(current_capture) {
+		log_capture::message entry = { level, message };
+		current_capture->messages.push_back(entry);
+	} else {
+		write_debug_log(level, message);
+	}
+}
 
 logger::~logger() {
-	
-	color::shell_command previous = color::current;
-	progress::clear();
-	
-	switch(level) {
-		case Debug:   std::cout << color::cyan   << buffer.str() << previous << "\n"; break;
-		case Info:    std::cout << color::white  << buffer.str() << previous << "\n"; break;
-		case Warning: {
-			std::cerr << color::yellow << "Warning: " << buffer.str() << previous << "\n";
-			total_warnings++;
-			break;
-		}
-		case Error: {
-			std::cerr << color::red << buffer.str() << previous << "\n";
-			total_errors++;
-			break;
-		}
+	try {
+		emit(level, buffer.str());
+	} catch(...) {
+		// Logging must never throw.
 	}
-
-	if (log_path.has_value())
-	{
-		std::ofstream ofs(log_path.value(), std::ios_base::app);
-		ofs << buffer.str() << "\n";
-		ofs.close();
-	}
-	
 }
 
-std::streambuf * warning_suppressor::set_streambuf(std::streambuf * streambuf) {
-	return std::cerr.rdbuf(streambuf);
+log_capture::log_capture() : previous(current_capture), installed(true) {
+	current_capture = this;
 }
 
-void warning_suppressor::flush() {
+void log_capture::restore() {
+	if(installed) {
+		current_capture = previous;
+		installed = false;
+	}
+}
+
+void log_capture::flush() {
 	restore();
-	std::cerr << buffer.str();
-	logger::total_warnings += warnings;
-	logger::total_errors += errors;
+	std::vector<message> captured;
+	captured.swap(messages);
+	for(size_t i = 0; i < captured.size(); i++) {
+		logger::emit(captured[i].level, captured[i].text);
+	}
+}
+
+bool log_capture::has_problems() const {
+	for(size_t i = 0; i < messages.size(); i++) {
+		if(messages[i].level >= logger::Warning) {
+			return true;
+		}
+	}
+	return false;
 }

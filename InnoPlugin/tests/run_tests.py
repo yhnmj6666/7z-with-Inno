@@ -3,9 +3,10 @@
 
 Builds the corpus (payload plus installers compiled from corpus/*.iss), then
 checks the plugin through the test client and, when available, through the
-Windows 7-Zip: list, extract and test every installer, and compare the result
-with the payload. Prints one line per check and a summary; the exit code is 0
-only if nothing failed.
+Windows 7-Zip: list, extract and test every installer, extract a subset and
+skip existing files, check methods, times and progress, open damaged copies,
+and compare the results with the payload. Prints one line per check and a
+summary; the exit code is 0 only if nothing failed.
 """
 
 import argparse
@@ -27,31 +28,45 @@ sys.path.insert(0, TESTS_DIR)
 import make_payload  # noqa: E402
 
 COMPILERS = ["5.6.1", "5.6.1-unicode", "6.0.5", "6.1.2", "6.2.2"]
-VARIANTS = [
-    "lzma-solid",
-    "lzma2-nonsolid",
-    "zip-solid",
-    "zip-nonsolid",
-    "bzip-solid",
-    "bzip-nonsolid",
-    "none",
-]
+# Compilers whose preprocessor does not define UNICODE (ANSI installers).
+ANSI_COMPILERS = {"5.6.1"}
+# Variant -> compression method of its files, as kpidMethod names it.
+VARIANTS = {
+    "lzma-solid": "LZMA",
+    "lzma2-nonsolid": "LZMA2",
+    "zip-solid": "Deflate",
+    "zip-nonsolid": "Deflate",
+    "bzip-solid": "BZip2",
+    "bzip-nonsolid": "BZip2",
+    "none": "Copy",
+    "time-utc": "LZMA2",
+    "time-local": "LZMA2",
+}
+# Timestamp variants -> True if they store times in UTC (TimeStampsInUTC=yes).
+TIME_VARIANTS = {"time-utc": True, "time-local": False}
+# On Linux, the client lists the timestamp variants in this time zone.
+TIME_ZONE = "America/New_York"
+# Payload files that are x86 executables. Inno Setup 5.3.9 and later store them
+# with this call instruction filter when they are compressed.
+EXECUTABLES = {"bin/calls.exe"}
+FILTER = "IF5309"
 TIMEOUT = 600
 
 # Characters that Windows does not allow in file names. The test client and
 # 7-Zip on Windows replace them with '_' in each path component.
 INCORRECT_CHARS = re.compile(r'[\x00-\x1f:*?<>|"]')
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+# Extra items whose number depends on the compiler (wizard images).
+OPTIONAL_EXTRA = re.compile(r"embedded\\WizardImage(Small)?\d+\.bmp$")
+# Inno Setup [Files] parameters: Name: "value" or Name: value.
+PARAMETER = re.compile(r'(\w+)\s*:\s*(?:"([^"]*)"|([^;]*))')
+# The client's item results for damaged data.
+ERROR_RESULTS = {"crc_error", "data_error", "unexpected_end"}
 
 
 def fs_components(archive_path):
     """Archive path ('\\'-separated) -> output path components."""
     return [INCORRECT_CHARS.sub("_", c) for c in archive_path.split("\\") if c]
-
-
-def is_generated_item(path):
-    """Items the handler adds besides the [Files] entries (unchanged until Phase 4)."""
-    return path == "unins___.exe" or path.startswith("embedded\\")
 
 
 def read_text(path):
@@ -60,31 +75,27 @@ def read_text(path):
         return f.read().replace(b"\r\n", b"\n").decode("ascii")
 
 
+def filetime(unix_time):
+    return (unix_time + 11644473600) * 10 ** 7
+
+
 class Results:
     def __init__(self):
-        self.counts = dict.fromkeys(["PASS", "FAIL", "XFAIL", "XPASS", "SKIP"], 0)
+        self.counts = dict.fromkeys(["PASS", "FAIL", "SKIP"], 0)
 
     def report(self, status, name, detail=""):
         self.counts[status] += 1
         print("%-5s %s%s" % (status, name, ": " + detail if detail else ""), flush=True)
 
-    def check(self, name, problems):
+    def check(self, name, problems, detail=""):
         if problems:
-            self.report("FAIL", name, "; ".join(problems[:5]) + (" ..." if len(problems) > 5 else ""))
+            self.report("FAIL", name, (detail + "; " if detail else "") + "; ".join(problems[:5])
+                        + (" ..." if len(problems) > 5 else ""))
         else:
-            self.report("PASS", name)
-
-    def expect_failure(self, name, failed, problems):
-        """For known problems: failed=True is XFAIL, a success is XPASS (counted as a failure)."""
-        if problems:
-            self.report("FAIL", name, "; ".join(problems))
-        elif failed:
-            self.report("XFAIL", name, "known problem, fixed in Phase 4")
-        else:
-            self.report("XPASS", name, "passed unexpectedly, update the expectation")
+            self.report("PASS", name, detail)
 
     def failed(self):
-        return self.counts["FAIL"] + self.counts["XPASS"] > 0
+        return self.counts["FAIL"] > 0
 
     def summary(self):
         return ", ".join("%d %s" % (n, k) for k, n in self.counts.items())
@@ -129,27 +140,103 @@ def script_files(variant):
     return files
 
 
-def expected_entries(variant):
-    """Returns [(archive path, payload path with '/')] from the [Files] sections."""
-    entries = []
-    section = None
-    for path in script_files(variant):
-        for line in read_text(path).split("\n"):
+def script_lines(path, defined):
+    """Yields the lines of a corpus script with #include files inserted and
+    #ifdef, #ifndef, #else and #endif applied. defined: the preprocessor
+    symbols (#define adds to it)."""
+    active = []
+    for line in read_text(path).split("\n"):
+        s = line.strip()
+        if not s.startswith("#"):
+            if all(active):
+                yield line
+            continue
+        words = s[1:].split()
+        directive = words[0] if words else ""
+        if directive in ("ifdef", "ifndef") and len(words) == 2:
+            active.append((words[1] in defined) == (directive == "ifdef"))
+        elif directive == "else" and active:
+            active[-1] = not active[-1]
+        elif directive == "endif" and active:
+            active.pop()
+        elif not all(active):
+            continue
+        elif directive == "include":
+            m = re.match(r'#\s*include\s+"([^"]+)"$', s)
+            if not m:
+                raise ValueError("%s: unsupported #include: %s" % (path, s))
+            yield from script_lines(os.path.join(os.path.dirname(path), m.group(1)), defined)
+        elif directive == "define" and len(words) >= 2:
+            defined.add(words[1])
+        else:
+            raise ValueError("%s: unsupported preprocessor line: %s" % (path, s))
+    if active:
+        raise ValueError("%s: #ifdef without #endif" % path)
+
+
+class Expected:
+    """What a corpus installer contains, from its scripts (see corpus/common.iss).
+
+    entries: [(item path, payload path with '/')] for the [Files] entries;
+    sources: the same as a dict; extras: the embedded items that must be
+    listed (the wizard images are optional, their number depends on the
+    compiler)."""
+
+    def __init__(self, compiler, variant):
+        tag = "%s/%s" % (compiler, variant)
+        payload_names = [rel for rel, _ in make_payload.files()]
+        defined = set() if compiler in ANSI_COMPILERS else {"UNICODE"}
+        self.entries, languages = [], []
+        section, expect = None, None
+        for line in script_lines(os.path.join(SCRIPTS_DIR, variant + ".iss"), defined):
             s = line.strip()
-            if not s or s.startswith(";") or s.startswith("#"):
+            m = re.match(r";\s*expect:\s*(.*\S)", s)
+            if m:
+                expect = m.group(1)
+                continue
+            if not s or s.startswith(";"):
                 continue
             if s.startswith("["):
                 section = s.lower()
                 continue
-            if section != "[files]":
+            if section not in ("[files]", "[languages]"):
                 continue
-            params = {k.lower(): v for k, v in re.findall(r'(\w+)\s*:\s*"([^"]*)"', s)}
-            source = params["source"].split("\\")
-            if source[0] != "payload" or any(c in params["source"] for c in "*?"):
-                raise ValueError("unsupported [Files] entry in %s: %s" % (path, s))
-            name = params.get("destname", source[-1])
-            entries.append((params["destdir"].rstrip("\\") + "\\" + name, "/".join(source[1:])))
-    return entries
+            params = {}
+            for p in PARAMETER.finditer(s):
+                params[p.group(1).lower()] = p.group(2) if p.group(2) is not None else p.group(3).strip()
+            if section == "[languages]":
+                languages.append(params["name"])
+                continue
+            source = params.get("source", "")
+            if not source.startswith("payload\\") or "destdir" not in params:
+                raise ValueError("%s: unsupported [Files] entry: %s" % (tag, s))
+            rel = source[len("payload\\"):].replace("\\", "/")
+            dest_dir = params["destdir"].rstrip("\\")
+            if rel.endswith("/*"):
+                # The payload files in that folder, with recursesubdirs also in its subfolders.
+                prefix = rel[:-1]
+                recurse = "recursesubdirs" in params.get("flags", "").lower().split()
+                matched = [n for n in payload_names
+                           if n.startswith(prefix) and (recurse or "/" not in n[len(prefix):])]
+                if expect or not matched:
+                    raise ValueError("%s: unsupported [Files] entry: %s" % (tag, s))
+                self.entries += [(dest_dir + "\\" + n[len(prefix):].replace("/", "\\"), n) for n in matched]
+                continue
+            if rel not in payload_names:
+                raise ValueError("%s: not a payload file: %s" % (tag, source))
+            self.entries.append((expect or dest_dir + "\\" + params.get("destname", rel.split("/")[-1]), rel))
+            expect = None
+        if expect:
+            raise ValueError("%s: '; expect:' without an entry" % tag)
+        seen = set()
+        for path, _ in self.entries:
+            if path.lower() in seen:
+                raise ValueError("%s: two entries for %s (add '; expect:' lines)" % (tag, path))
+            seen.add(path.lower())
+        self.sources = dict(self.entries)
+        # Without a [Languages] section, Inno Setup names the language "default".
+        self.extras = ["embedded\\install_script.iss"] + [
+            "embedded\\%s.isl" % name for name in languages or ["default"]]
 
 
 def corpus_key(compiler, variant):
@@ -200,8 +287,10 @@ def build_corpus(args, results):
             for f in (exe, key_file):
                 if os.path.exists(f):
                     os.remove(f)
+            # Installers store local times unless TimeStampsInUTC=yes; compile in UTC.
             code, out, err = run([iscc, "/Q", "/O" + out_dir, "/F" + variant,
-                                  os.path.join(corpus, variant + ".iss")], cwd=corpus)
+                                  os.path.join(corpus, variant + ".iss")], cwd=corpus,
+                                 env=dict(os.environ, TZ="UTC"))
             problems = exit_problem(code, (err + out)[-500:])
             if not problems and not os.path.isfile(exe):
                 problems.append("no output file")
@@ -213,169 +302,403 @@ def build_corpus(args, results):
     return installers
 
 
+def make_damaged(args, results, installers, payload):
+    """Writes damaged copies of corpus installers. Returns {(compiler, kind): (path, detail)}.
+
+    Inno Setup writes the setup headers after the file data, so a truncated
+    installer cannot be opened at all; flipped bytes in the file data give
+    per-item errors:
+      stored     none.exe, one bit flipped inside data/random.bin
+      solid      lzma-solid.exe, one byte changed in the middle of its chunk
+      truncated  lzma-solid.exe cut in the middle of its chunk
+      headers    lzma-solid.exe cut inside the setup headers
+    """
+    damaged = {}
+    for compiler in args.compilers:
+        for kind, variant in (("stored", "none"), ("solid", "lzma-solid"),
+                              ("truncated", "lzma-solid"), ("headers", "lzma-solid")):
+            exe = installers.get((compiler, variant))
+            if not exe:
+                continue
+            with open(exe, "rb") as f:
+                data = bytearray(f.read())
+            problem = None
+            if kind == "stored":
+                random_bin = payload["data/random.bin"]
+                needle = random_bin[len(random_bin) // 2 - 32:len(random_bin) // 2 + 32]
+                if data.count(needle) != 1:
+                    problem = "random.bin marker occurs %d times (expected once)" % data.count(needle)
+                else:
+                    offset = data.find(needle) + len(needle) // 2
+                    data[offset] ^= 1
+            else:
+                headers = data.rfind(b"Inno Setup Setup Data")
+                chunk = data.rfind(b"zlb\x1a", 0, max(headers, 0))
+                if headers < 0 or chunk < 0:
+                    problem = "setup headers or chunk not found"
+                elif kind == "solid":
+                    offset = (chunk + headers) // 2
+                    data[offset] ^= 0x55
+                elif kind == "truncated":
+                    offset = (chunk + headers) // 2
+                    del data[offset:]
+                else:
+                    offset = headers + 200
+                    del data[offset:]
+            name = "damaged %s/%s-%s" % (compiler, variant, kind)
+            if problem:
+                results.report("FAIL", name, problem)
+                continue
+            path = os.path.join(args.work_dir, "damaged", compiler, "%s-%s.exe" % (variant, kind))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(data)
+            detail = "%s at offset %d" % ("cut" if kind in ("truncated", "headers") else "changed byte", offset)
+            damaged[(compiler, kind)] = (path, detail)
+    return damaged
+
+
 # ---------------------------------------------------------------------------
 # Comparing with the payload
 
 
-def compare_listing(items, entries, payload):
-    """items: [(path, size)] as listed. Returns a list of problems."""
+def compare_listing(listed, expected, payload):
+    """listed: [(path, size)] as listed. Returns a list of problems."""
     problems = []
-    listed = {}
-    for path, size in items:
-        if path in listed:
+    sizes, seen = {}, set()
+    for path, size in listed:
+        if path.lower() in seen:
             problems.append("duplicate path %s" % path)
-        listed[path] = size
-    for path, source in entries:
-        if path not in listed:
+        seen.add(path.lower())
+        sizes[path] = size
+    for path, source in expected.entries:
+        if path not in sizes:
             problems.append("missing %s" % path)
-        elif listed[path] != len(payload[source]):
-            problems.append("%s: size %s, expected %d" % (path, listed[path], len(payload[source])))
-    expected = {path for path, _ in entries}
-    for path in listed:
-        if path not in expected and not is_generated_item(path):
+        elif sizes[path] != len(payload[source]):
+            problems.append("%s: size %s, expected %d" % (path, sizes[path], len(payload[source])))
+    for path in expected.extras:
+        if path not in sizes:
+            problems.append("missing %s" % path)
+    for path in sizes:
+        if path not in expected.sources and path not in expected.extras and not OPTIONAL_EXTRA.match(path):
             problems.append("unexpected item %s" % path)
     return problems
 
 
-def compare_folder(out_dir, entries, payload, excluded_sources=None):
-    """Compares extracted files with the payload. Returns a list of problems."""
-    excluded_sources = set(excluded_sources or ())
+def compare_folder(out_dir, items, sources, payload, unchecked=()):
+    """Compares the files in out_dir with the extracted items ({path: listed
+    size}): payload files byte for byte (sources: {path: payload path}), other
+    items (embedded files) by size. The files of the items in unchecked may
+    differ or be missing. Returns a list of problems."""
     problems = []
-    expected = {}
-    for path, source in entries:
-        expected[tuple(fs_components(path))] = source
+    expected = {tuple(fs_components(path)): path for path in items}
+    tolerated = {tuple(fs_components(path)) for path in unchecked}
     found = set()
     for root, _, names in os.walk(out_dir):
         for n in names:
-            rel = os.path.relpath(os.path.join(root, n), out_dir)
-            found.add(tuple(rel.split(os.sep)))
-    for comps, source in sorted(expected.items()):
-        if source in excluded_sources:
+            found.add(tuple(os.path.relpath(os.path.join(root, n), out_dir).split(os.sep)))
+    for comps, path in sorted(expected.items()):
+        if comps in tolerated:
             continue
         if comps not in found:
-            problems.append("not extracted: %s" % "/".join(comps))
+            problems.append("not extracted: %s" % path)
             continue
         with open(os.path.join(out_dir, *comps), "rb") as f:
             data = f.read()
-        if data != payload[source]:
-            problems.append("%s: content differs from payload/%s (size %d, expected %d)"
-                            % ("/".join(comps), source, len(data), len(payload[source])))
-    for comps in sorted(found):
-        if comps not in expected and comps != ("unins___.exe",) and comps[0] != "embedded":
-            problems.append("unexpected file %s" % "/".join(comps))
+        if path in sources:
+            if data != payload[sources[path]]:
+                problems.append("%s: content differs from payload/%s (size %d, expected %d)"
+                                % (path, sources[path], len(data), len(payload[sources[path]])))
+        elif len(data) != items[path]:
+            problems.append("%s: size %d, listed %s" % (path, len(data), items[path]))
+    for comps in sorted(found - set(expected) - tolerated):
+        problems.append("unexpected file %s" % "\\".join(comps))
     return problems
 
 
-def corrupt_stored_payload(exe, corrupt_exe, payload_data):
-    """Copies exe and flips a byte in a unique payload slice. Returns the file offset."""
-    middle = len(payload_data) // 2
-    needle = payload_data[middle - 32:middle + 32]
-    with open(exe, "rb") as f:
-        data = bytearray(f.read())
-    offsets = []
-    offset = data.find(needle)
-    while offset >= 0:
-        offsets.append(offset)
-        offset = data.find(needle, offset + 1)
-    if len(offsets) != 1:
-        raise ValueError("random.bin marker occurs %d times in installer (expected exactly once)"
-                         % len(offsets))
-    flip_offset = offsets[0] + len(needle) // 2
-    data[flip_offset] ^= 1
-    os.makedirs(os.path.dirname(corrupt_exe), exist_ok=True)
-    with open(corrupt_exe, "wb") as f:
-        f.write(data)
-    return flip_offset
+def method_problems(variant, expected, archive_method, items):
+    """Checks kpidMethod: the variant's method, plus the call instruction filter
+    for compressed executables. items: [(path, method)]."""
+    method = VARIANTS[variant]
+    filtered = method if method == "Copy" else "%s %s" % (method, FILTER)
+    has_executable = any(source in EXECUTABLES for source in expected.sources.values())
+    problems = []
+    if archive_method != (filtered if has_executable else method):
+        problems.append("archive method %r, expected %r" % (archive_method, filtered if has_executable else method))
+    for path, item_method in items:
+        source = expected.sources.get(path)
+        want = None if source is None else filtered if source in EXECUTABLES else method
+        if (item_method or None) != want:
+            problems.append("%s: method %r, expected %r" % (path, item_method, want))
+    return problems
+
+
+def local_to_utc(local_filetime, time_zone=None):
+    """Returns what LocalFileTimeToFileTime gives now: it uses the current
+    offset of the time zone (time_zone, or the local one), not the one of the
+    date. Windows always uses its own time zone."""
+    if IS_WINDOWS:
+        import ctypes
+        from ctypes import wintypes
+        local = wintypes.FILETIME(local_filetime & 0xFFFFFFFF, local_filetime >> 32)
+        utc = wintypes.FILETIME()
+        if not ctypes.windll.kernel32.LocalFileTimeToFileTime(ctypes.byref(local), ctypes.byref(utc)):
+            raise OSError("LocalFileTimeToFileTime failed")
+        return utc.dwLowDateTime | (utc.dwHighDateTime << 32)
+    import datetime
+    if time_zone:
+        import zoneinfo
+        now = datetime.datetime.now(zoneinfo.ZoneInfo(time_zone))
+    else:
+        now = datetime.datetime.now().astimezone()
+    return local_filetime - int(now.utcoffset().total_seconds()) * 10 ** 7
+
+
+def expected_mtimes(variant, expected, time_zone=None):
+    """Returns {item path: FILETIME} for a timestamp variant: the payload
+    times, converted from local time unless the installer stores UTC."""
+    mtimes = make_payload.mtimes()
+    result = {}
+    for path, source in expected.entries:
+        stored = filetime(mtimes[source])
+        result[path] = stored if TIME_VARIANTS[variant] else local_to_utc(stored, time_zone)
+    return result
+
+
+def mtime_problems(before, after, got):
+    """Compares {path: FILETIME} with the times that expected_mtimes() gave
+    before and after the run (the time zone offset may change in between)."""
+    problems = []
+    for path in sorted(before):
+        if got.get(path) not in (before[path], after[path]):
+            problems.append("%s: mtime %s, expected %d" % (path, got.get(path), before[path]))
+    return problems
+
+
+def modify_output(out_dir, expected):
+    """Prepares an extracted folder for the skip-existing check: changes the
+    first payload file and deletes one in the middle. Returns (changed path,
+    deleted path, new content of the changed file)."""
+    changed = expected.entries[0][0]
+    deleted = expected.entries[len(expected.entries) // 2][0]
+    content = b"Changed after the first extraction.\n"
+    with open(os.path.join(out_dir, *fs_components(changed)), "wb") as f:
+        f.write(content)
+    os.remove(os.path.join(out_dir, *fs_components(deleted)))
+    return changed, deleted, content
 
 
 # ---------------------------------------------------------------------------
 # Test client
 
 
-def parse_json_lines(text):
-    objs = []
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("{"):
-            objs.append(json.loads(line))
-    return objs
+class Client:
+    def __init__(self, args, env):
+        self.exe = args.client
+        self.plugin = args.plugin
+        self.env = env
+
+    def run(self, *cmd):
+        """Runs the client. Returns (exit code, JSON objects, problems); the
+        problems include output that is not a JSON line (the plugin must be
+        silent). Paths are returned with '\\'."""
+        code, out, err = run([self.exe, self.plugin] + list(cmd), env=self.env)
+        objs, problems = [], []
+        if code is None:
+            problems.append(err)
+        elif err.strip():
+            problems.append("stderr: %s" % err.strip()[:300])
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                obj = None
+            if not isinstance(obj, dict):
+                problems.append("not a JSON line: %r" % line[:200])
+                continue
+            if isinstance(obj.get("path"), str):
+                obj["path"] = obj["path"].replace("/", "\\")
+            objs.append(obj)
+        return code, objs, problems
 
 
-def test_client(args, results, installers, entries, payload, env):
-    client, plugin = args.client, args.plugin
-    for f in (client, plugin):
+def of_type(objs, kind):
+    return [o for o in objs if o.get("type") == kind]
+
+
+def client_exit(code, objs, expected=0):
+    if code == expected:
+        return []
+    errors = "; ".join(o.get("message", "") + (" " + o["name"] if o.get("name") else "")
+                       + (" " + o["hresult"] if o.get("hresult") else "") for o in of_type(objs, "error"))
+    return ["exit code %s (expected %d)%s" % (code, expected, ": " + errors if errors else "")]
+
+
+def extract_problems(objs, mode, indices, total=None, skipped=0, errors=0):
+    """Checks the item results and the extract_result line of a client t or x.
+    indices: the items that must get a result. total: the expected progress
+    total, or None for at least the sum of the sizes (a subset also counts the
+    data skipped before its items)."""
+    problems = []
+    results = of_type(objs, "item_result")
+    got = sorted(o.get("index") for o in results)
+    if got != sorted(indices):
+        problems.append("results for items %s, expected %s" % (got[:20], sorted(indices)[:20]))
+    for o in results:
+        if o.get("mode") != mode:
+            problems.append("%s: mode %s" % (o.get("path"), o.get("mode")))
+        if errors == 0 and o.get("result") != "ok":
+            problems.append("%s: %s" % (o.get("path"), o.get("result")))
+    ends = of_type(objs, "extract_result")
+    if len(ends) != 1:
+        return problems + ["%d extract_result lines" % len(ends)]
+    end = ends[0]
+    if end.get("hresult") != "0x00000000":
+        problems.append("hresult %s" % end.get("hresult"))
+    if (end.get("items"), end.get("errors"), end.get("skipped")) != (len(indices), errors, skipped):
+        problems.append("items %s, errors %s, skipped %s; expected %d, %d, %d" % (
+            end.get("items"), end.get("errors"), end.get("skipped"), len(indices), errors, skipped))
+    if end.get("completed_decreased"):
+        problems.append("progress went backwards")
+    if end.get("completed") != end.get("total"):
+        problems.append("progress completed %s of total %s" % (end.get("completed"), end.get("total")))
+    if total is not None and end.get("total") != total:
+        problems.append("progress total %s, expected the sum of the sizes %d" % (end.get("total"), total))
+    return problems
+
+
+def test_client(args, results, installers, expected, damaged, payload, env):
+    for f in (args.client, args.plugin):
         if not os.path.isfile(f):
             results.report("FAIL", "client", "%s not found (build it or pass --client/--plugin)" % f)
             return
-    code, out, err = run([client, plugin, "i"], env=env)
-    problems = exit_problem(code, err)
-    if not problems:
-        formats = [o for o in parse_json_lines(out) if o.get("type") == "format"]
-        if not any(o.get("name") == "Inno" and o.get("ext") == "exe" for o in formats):
-            problems.append("no Inno format with extension exe")
+    client = Client(args, env)
+    code, objs, problems = client.run("i")
+    problems += client_exit(code, objs)
+    if not any(o.get("name") == "Inno" and o.get("ext") == "exe" for o in of_type(objs, "format")):
+        problems.append("no Inno format with extension exe")
     results.check("client i", problems)
 
     for (compiler, variant), exe in sorted(installers.items()):
         tag = "%s/%s" % (compiler, variant)
-        code, out, err = run([client, plugin, "l", exe], env=env)
-        problems = exit_problem(code, err)
-        if not problems:
-            objs = parse_json_lines(out)
-            items = [(o["path"], o.get("size")) for o in objs if o.get("type") == "item"]
-            problems = compare_listing(items, entries[variant], payload)
+        exp = expected[(compiler, variant)]
+        time_zone = None if IS_WINDOWS else TIME_ZONE
+        before = expected_mtimes(variant, exp, time_zone) if variant in TIME_VARIANTS else None
+
+        code, objs, problems = client.run("l", exe)
+        problems += client_exit(code, objs)
+        archive = (of_type(objs, "archive") or [{}])[0]
+        items = of_type(objs, "item")
+        problems += compare_listing([(o.get("path"), o.get("size")) for o in items], exp, payload)
+        if archive.get("phy_size") != os.path.getsize(exe):
+            problems.append("phy_size %s, file size %d" % (archive.get("phy_size"), os.path.getsize(exe)))
+        for key in ("error", "warning"):
+            if key in archive:
+                problems.append("archive %s: %s" % (key, archive[key]))
         results.check("client l %s" % tag, problems)
+        if not items:
+            continue
+        listed = {o["path"]: o.get("size") for o in items}
+        indices = {o["path"]: o["index"] for o in items}
+        all_indices = sorted(indices.values())
+        sizes = sum(listed.values())
+
+        results.check("client method %s" % tag, method_problems(
+            variant, exp, archive.get("method"), [(o["path"], o.get("method")) for o in items]))
+        if before:
+            problems = mtime_problems(before, expected_mtimes(variant, exp, time_zone),
+                                      {o["path"]: o.get("mtime") for o in items})
+            results.check("client mtime %s" % tag, problems, "stored in UTC" if TIME_VARIANTS[variant]
+                          else "stored in local time, listed in %s" % (time_zone or "the local time zone"))
 
         out_dir = os.path.join(args.work_dir, "client", compiler, variant)
-        code, out, err = run([client, plugin, "x", exe, out_dir], env=env)
-        problems = exit_problem(code, err)
-        if not problems:
-            problems = compare_folder(out_dir, entries[variant], payload)
+        code, objs, problems = client.run("x", exe, out_dir)
+        problems += client_exit(code, objs)
+        problems += extract_problems(objs, "extract", all_indices, sizes)
+        problems += compare_folder(out_dir, listed, exp.sources, payload)
         results.check("client x %s" % tag, problems)
+        extracted = not problems
 
-        # Test mode fails: the handler returns E_FAIL when GetStream gives no stream.
-        code, out, err = run([client, plugin, "t", exe], env=env)
-        results.expect_failure("client t %s" % tag, code == 3, [] if code in (0, 3) else exit_problem(code, err))
+        code, objs, problems = client.run("t", exe)
+        problems += client_exit(code, objs)
+        problems += extract_problems(objs, "test", all_indices, sizes)
+        results.check("client t %s" % tag, problems)
 
-        if variant == "none":
-            name = "client corrupt-crc %s" % tag
-            corrupt_exe = os.path.join(args.work_dir, "corrupt", compiler, "none.exe")
-            corrupt_out = os.path.join(args.work_dir, "client-corrupt", compiler, "none")
-            try:
-                flip_offset = corrupt_stored_payload(
-                    exe, corrupt_exe, payload["data/random.bin"])
-            except (OSError, ValueError) as e:
-                results.report("FAIL", name, str(e))
-                continue
+        # Every other item, in reverse order: the plugin decodes in data order.
+        subset = all_indices[::2][::-1]
+        option = "-i" + ",".join(str(i) for i in subset)
+        subset_items = {path: size for path, size in listed.items() if indices[path] in subset}
+        subset_dir = os.path.join(args.work_dir, "client-subset", compiler, variant)
+        code, objs, problems = client.run("x", exe, subset_dir, option)
+        problems += client_exit(code, objs)
+        problems += extract_problems(objs, "extract", subset)
+        problems += compare_folder(subset_dir, subset_items, exp.sources, payload)
+        code, objs, test_problems = client.run("t", exe, option)
+        problems += test_problems + client_exit(code, objs) + extract_problems(objs, "test", subset)
+        results.check("client subset %s" % tag, problems, "%d of %d items, reverse order" % (len(subset), len(listed)))
 
-            code, out, err = run([client, plugin, "x", corrupt_exe, corrupt_out], env=env)
-            problems = exit_problem(code, err, expected=4)
-            item_results = [
-                o for o in parse_json_lines(out) if o.get("type") == "item_result"
-            ]
-            is_random = lambda o: o.get("path", "").replace("/", "\\").lower().endswith(
-                "data\\random.bin")
-            random_results = [o for o in item_results if is_random(o)]
-            expected_random = sum(
-                path.lower().endswith("data\\random.bin") for path, _ in entries[variant])
-            if len(random_results) != expected_random:
-                problems.append("random.bin item results %d (expected %d)"
-                                % (len(random_results), expected_random))
-            for item in random_results:
-                if item.get("result") != "crc_error":
-                    problems.append("%s result %s (expected crc_error)"
-                                    % (item.get("path"), item.get("result")))
-            for item in item_results:
-                if not is_random(item) and item.get("result") != "ok":
-                    problems.append("%s result %s (expected ok)"
-                                    % (item.get("path"), item.get("result")))
-            problems += compare_folder(
-                corrupt_out, entries[variant], payload, excluded_sources={"data/random.bin"})
-            detail = "flipped installer byte at offset %d" % flip_offset
-            if problems:
-                results.report("FAIL", name, detail + "; " + "; ".join(problems[:5])
-                               + (" ..." if len(problems) > 5 else ""))
-            else:
-                results.report("PASS", name, detail)
+        # Skip existing files: only the deleted file is extracted again.
+        if not extracted:
+            results.report("SKIP", "client skip-existing %s" % tag, "extraction failed")
+            continue
+        changed, deleted, content = modify_output(out_dir, exp)
+        code, objs, problems = client.run("x", exe, out_dir, "-s")
+        problems += client_exit(code, objs)
+        problems += extract_problems(objs, "extract", [indices[deleted]], skipped=len(listed) - 1)
+        skipped = sorted(o.get("index") for o in of_type(objs, "skipped"))
+        if skipped != sorted(i for path, i in indices.items() if path != deleted):
+            problems.append("skipped items %s" % skipped[:20])
+        problems += compare_folder(out_dir, listed, exp.sources, payload, unchecked=[changed])
+        with open(os.path.join(out_dir, *fs_components(changed)), "rb") as f:
+            if f.read() != content:
+                problems.append("%s was overwritten" % changed)
+        results.check("client skip-existing %s" % tag, problems, "deleted %s" % deleted)
+
+    test_client_damaged(args, results, client, installers, expected, damaged, payload)
+
+
+def test_client_damaged(args, results, client, installers, expected, damaged, payload):
+    for (compiler, kind), (path, detail) in sorted(damaged.items()):
+        variant = "none" if kind == "stored" else "lzma-solid"
+        exp = expected[(compiler, variant)]
+        name = "client damaged %s/%s-%s" % (compiler, variant, kind)
+        if kind in ("truncated", "headers"):
+            # Never a crash or hang: the installer is declined.
+            code, objs, problems = client.run("l", path)
+            problems += client_exit(code, objs, expected=2)
+            results.check(name, problems, detail + ", cannot open")
+            continue
+        code, objs, problems = client.run("l", installers[(compiler, variant)])
+        listed = {o["path"]: o.get("size") for o in of_type(objs, "item")}
+        out_dir = os.path.join(args.work_dir, "client-damaged", compiler, kind)
+        code, objs, x_problems = client.run("x", path, out_dir)
+        problems += x_problems + client_exit(code, objs, expected=4)
+        item_results = of_type(objs, "item_result")
+        bad = [o for o in item_results if o.get("result") != "ok"]
+        problems += ["%s: %s" % (o.get("path"), o.get("result")) for o in bad
+                     if o.get("result") not in ERROR_RESULTS]
+        if kind == "stored":
+            # Only the changed file is damaged.
+            want = sorted(p for p, s in exp.sources.items() if s == "data/random.bin")
+            if sorted(o.get("path") for o in bad) != want or any(o.get("result") != "crc_error" for o in bad):
+                problems.append("errors %s, expected crc_error for %s" % (
+                    ["%s: %s" % (o.get("path"), o.get("result")) for o in bad][:5], want))
+        elif not bad:
+            problems.append("no item errors")
+        ends = of_type(objs, "extract_result")
+        if not ends or ends[0].get("hresult") != "0x00000000" or ends[0].get("completed") != ends[0].get("total"):
+            problems.append("extract_result %s" % (ends[:1],))
+        problems += compare_folder(out_dir, listed, exp.sources, payload, unchecked=[o.get("path") for o in bad])
+        ok = sum(o.get("result") == "ok" and o.get("path") in exp.sources for o in item_results)
+        results.check(name, problems, "%s, %d files ok, %d errors" % (detail, ok, len(bad)))
+
+    # A PE file that is not an installer is declined.
+    exe = os.path.join(args.corpus_dir, "payload", "bin", "calls.exe")
+    code, objs, problems = client.run("l", exe)
+    problems += client_exit(code, objs, expected=2)
+    results.check("client l payload/bin/calls.exe", problems, "not an installer")
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +715,7 @@ class SevenZip:
             # Wine takes TMP and TEMP from its own registry, keep the environment.
             self.env = dict(os.environ)
             self.env.setdefault("WINEDEBUG", "-all")
+            self.env.pop("INNO_PLUGIN_LOG", None)
 
     @staticmethod
     def path(p):
@@ -483,7 +807,19 @@ def prepare_sevenzip(args, results):
     return folder
 
 
-def test_sevenzip(args, results, installers, entries, payload, env):
+def file_mtimes(out_dir, paths):
+    """Returns {path: modification time of the extracted file as FILETIME}."""
+    result = {}
+    for path in paths:
+        try:
+            ns = os.stat(os.path.join(out_dir, *fs_components(path))).st_mtime_ns
+        except OSError:
+            continue
+        result[path] = filetime(0) + ns // 100
+    return result
+
+
+def test_sevenzip(args, results, installers, expected, damaged, payload, env):
     folder = prepare_sevenzip(args, results)
     if not folder:
         return
@@ -514,38 +850,105 @@ def test_sevenzip(args, results, installers, entries, payload, env):
 
     for (compiler, variant), exe in sorted(installers.items()):
         tag = "%s/%s" % (compiler, variant)
+        exp = expected[(compiler, variant)]
         code, out, err = sz.run("l", "-slt", sz.path(exe))
         problems = exit_problem(code, err)
+        archive, items = parse_slt(out)
         if not problems:
-            archive, items = parse_slt(out)
             if archive.get("Type") != "Inno":
                 problems.append("Type = %s" % archive.get("Type"))
-            listed = [(i.get("Path"), int(i["Size"]) if i.get("Size") else 0) for i in items]
-            problems += compare_listing(listed, entries[variant], payload)
+            if archive.get("Physical Size") != str(os.path.getsize(exe)):
+                problems.append("Physical Size = %s, file size %d" % (archive.get("Physical Size"),
+                                                                      os.path.getsize(exe)))
+            problems += compare_listing([(i.get("Path"), int(i["Size"]) if i.get("Size") else 0)
+                                         for i in items], exp, payload)
+            problems += method_problems(variant, exp, archive.get("Method"),
+                                        [(i.get("Path"), i.get("Method")) for i in items])
         results.check("7z l %s" % tag, problems)
+        listed = {i.get("Path"): int(i["Size"]) if i.get("Size") else 0 for i in items}
 
         out_dir = os.path.join(args.work_dir, "7z", compiler, variant)
         os.makedirs(out_dir, exist_ok=True)
+        before = expected_mtimes(variant, exp) if variant in TIME_VARIANTS else None
         code, out, err = sz.run("x", "-y", "-o" + sz.path(out_dir), sz.path(exe))
         problems = exit_problem(code, err)
         if not problems:
-            problems = compare_folder(out_dir, entries[variant], payload)
-        results.check("7z x %s" % tag, problems)
+            problems = compare_folder(out_dir, listed, exp.sources, payload)
+        extracted = not problems
+        detail = ""
+        if before and not problems:
+            # 7-Zip sets the file times from kpidMTime.
+            problems = mtime_problems(before, expected_mtimes(variant, exp), file_mtimes(out_dir, before))
+            detail = "file times: stored in UTC" if TIME_VARIANTS[variant] else \
+                "file times: stored in local time, converted in the local time zone"
+        results.check("7z x %s" % tag, problems, detail)
 
         code, out, err = sz.run("t", sz.path(exe))
-        results.expect_failure("7z t %s" % tag, code == 2, [] if code in (0, 2) else exit_problem(code, err))
+        problems = exit_problem(code, err)
+        if not problems and "Everything is Ok" not in out:
+            problems.append("no 'Everything is Ok'")
+        results.check("7z t %s" % tag, problems)
+
+        if extracted:
+            changed, deleted, content = modify_output(out_dir, exp)
+            code, out, err = sz.run("x", "-aos", "-o" + sz.path(out_dir), sz.path(exe))
+            problems = exit_problem(code, err)
+            problems += compare_folder(out_dir, listed, exp.sources, payload, unchecked=[changed])
+            with open(os.path.join(out_dir, *fs_components(changed)), "rb") as f:
+                if f.read() != content:
+                    problems.append("%s was overwritten" % changed)
+            results.check("7z x -aos %s" % tag, problems, "skip existing files, deleted %s" % deleted)
+
+    # Detection without the .exe extension (IsArc_Inno).
+    for compiler in args.compilers:
+        exe = installers.get((compiler, "lzma-solid"))
+        if not exe:
+            continue
+        renamed = os.path.join(args.work_dir, "renamed", compiler, "lzma-solid.bin")
+        os.makedirs(os.path.dirname(renamed), exist_ok=True)
+        shutil.copyfile(exe, renamed)
+        code, out, err = sz.run("l", "-slt", sz.path(renamed))
+        problems = exit_problem(code, err)
+        if not problems and parse_slt(out)[0].get("Type") != "Inno":
+            problems.append("Type = %s" % parse_slt(out)[0].get("Type"))
+        results.check("7z l %s/lzma-solid as .bin" % compiler, problems)
+
+    for (compiler, kind), (path, detail) in sorted(damaged.items()):
+        variant = "none" if kind == "stored" else "lzma-solid"
+        exp = expected[(compiler, variant)]
+        name = "7z damaged %s/%s-%s" % (compiler, variant, kind)
+        if kind in ("truncated", "headers"):
+            # Not opened as Inno (7-Zip may fall back to another handler).
+            code, out, err = sz.run("l", "-slt", sz.path(path))
+            problems = [] if code == 2 else exit_problem(code, err)
+            if code == 0 and parse_slt(out)[0].get("Type") == "Inno":
+                problems.append("opened as Inno")
+            results.check(name, problems, detail + ", exit code %s" % code)
+            continue
+        code, out, err = sz.run("t", sz.path(path))
+        problems = exit_problem(code, err, expected=2)
+        if kind == "stored":
+            code, out, err = sz.run("l", "-slt", sz.path(installers[(compiler, variant)]))
+            listed = {i.get("Path"): int(i["Size"]) if i.get("Size") else 0 for i in parse_slt(out)[1]}
+            out_dir = os.path.join(args.work_dir, "7z-damaged", compiler, kind)
+            os.makedirs(out_dir, exist_ok=True)
+            code, out, err = sz.run("x", "-y", "-o" + sz.path(out_dir), sz.path(path))
+            problems += exit_problem(code, err, expected=2)
+            problems += compare_folder(out_dir, listed, exp.sources, payload, unchecked=[
+                p for p, s in exp.sources.items() if s == "data/random.bin"])
+        results.check(name, problems, detail)
 
     # Executables that are not Inno installers still open with 7-Zip's own handlers.
-    for name, path, expected in (("7z l 7z.exe", sz.exe, "PE"),
-                                 ("7z l 7z SFX", make_sfx(args, sz, results), "7z")):
+    for name, path, want in (("7z l 7z.exe", sz.exe, "PE"),
+                             ("7z l 7z SFX", make_sfx(args, sz, results), "7z")):
         if not path:
             continue
         code, out, err = sz.run("l", "-slt", sz.path(path))
         problems = exit_problem(code, err)
         if not problems:
             archive, _ = parse_slt(out)
-            if archive.get("Type") != expected:
-                problems.append("Type = %s, expected %s" % (archive.get("Type"), expected))
+            if archive.get("Type") != want:
+                problems.append("Type = %s, expected %s" % (archive.get("Type"), want))
         results.check(name, problems)
 
 
@@ -599,22 +1002,30 @@ def main():
         args.corpus_dir), flush=True)
 
     shutil.rmtree(args.work_dir, ignore_errors=True)
-    os.makedirs(os.path.join(args.work_dir, "tmp"))
-    # The handler writes a debug log into the temporary folder on every open
-    # (known problem); keep those files in the work folder.
+    tmp = os.path.join(args.work_dir, "tmp")
+    os.makedirs(tmp)
+    # The plugin must not write files: give it an empty temporary folder and
+    # check that it stays empty. Its debug log is off unless INNO_PLUGIN_LOG is set.
     env = dict(os.environ)
+    env.pop("INNO_PLUGIN_LOG", None)
     for var in ("TMPDIR", "TMP", "TEMP"):
-        env[var] = os.path.join(args.work_dir, "tmp")
+        env[var] = tmp
+    if not IS_WINDOWS:
+        # The client converts local times with the offset of this time zone.
+        env["TZ"] = TIME_ZONE
 
     results = Results()
     payload = dict(make_payload.files())
-    entries = {v: expected_entries(v) for v in VARIANTS}
+    expected = {(c, v): Expected(c, v) for c in args.compilers for v in VARIANTS}
     installers = build_corpus(args, results)
+    damaged = make_damaged(args, results, installers, payload)
     if args.no_client:
         results.report("SKIP", "client", "--no-client")
     else:
-        test_client(args, results, installers, entries, payload, env)
-    test_sevenzip(args, results, installers, entries, payload, env)
+        test_client(args, results, installers, expected, damaged, payload, env)
+    test_sevenzip(args, results, installers, expected, damaged, payload, env)
+    left = sorted(os.listdir(tmp))
+    results.check("no files in the temporary folder", ["left: " + ", ".join(left[:5])] if left else [])
 
     print("\nSummary: " + results.summary())
     return 1 if results.failed() else 0

@@ -11,8 +11,12 @@
 // Usage:
 //   inno_client <plugin> i
 //   inno_client <plugin> l <archive> [-p<password>]
-//   inno_client <plugin> t <archive> [-p<password>]
-//   inno_client <plugin> x <archive> <output folder> [-p<password>]
+//   inno_client <plugin> t <archive> [-p<password>] [-i<index>[,<index>...]]
+//   inno_client <plugin> x <archive> <output folder> [-p<password>] [-i<index>[,<index>...]] [-s]
+//
+// -i passes only these items to IInArchive::Extract, in the given order.
+// -s skips items whose output file exists: GetStream returns no stream, as
+// 7-Zip does for -aos.
 //
 // Exit codes: 0 success, 1 usage or plugin error, 2 the archive cannot be opened,
 // 3 IInArchive::Extract failed, 4 some items reported errors.
@@ -28,6 +32,7 @@
 #include "CPP/Common/Defs.h"
 #include "CPP/Common/IntToString.h"
 #include "CPP/Common/StringConvert.h"
+#include "CPP/Common/StringToInt.h"
 #include "CPP/Common/UTFConvert.h"
 
 #include "CPP/Windows/DLL.h"
@@ -62,8 +67,10 @@ static const char * const kHelpString =
   "Usage:\n"
   "  inno_client <plugin> i\n"
   "  inno_client <plugin> l <archive> [-p<password>]\n"
-  "  inno_client <plugin> t <archive> [-p<password>]\n"
-  "  inno_client <plugin> x <archive> <output folder> [-p<password>]\n";
+  "  inno_client <plugin> t <archive> [-p<password>] [-i<index>[,<index>...]]\n"
+  "  inno_client <plugin> x <archive> <output folder> [-p<password>] [-i<index>[,<index>...]] [-s]\n"
+  "  -i  extract or test only these items, in this order\n"
+  "  -s  skip items whose output file exists\n";
 
 enum
 {
@@ -454,11 +461,13 @@ class CArchiveExtractCallback Z7_final:
 public:
   UInt64 NumErrors;
   UInt64 NumItems;
+  UInt64 NumSkipped;
   UInt64 Total;
   UInt64 Completed;
   bool TotalDefined;
   bool CompletedDecreased;
   bool PasswordIsDefined;
+  bool SkipExisting;
   UString Password;
 
   CArchiveExtractCallback():
@@ -468,11 +477,13 @@ public:
       _outFileStreamSpec(NULL),
       NumErrors(0),
       NumItems(0),
+      NumSkipped(0),
       Total(0),
       Completed(0),
       TotalDefined(false),
       CompletedDecreased(false),
-      PasswordIsDefined(false)
+      PasswordIsDefined(false),
+      SkipExisting(false)
   {
     _mtime.dwLowDateTime = _mtime.dwHighDateTime = 0;
   }
@@ -567,6 +578,15 @@ Z7_COM7F_IMF(CArchiveExtractCallback::GetStream(UInt32 index,
   NFind::CFileInfo fi;
   if (fi.Find(fullProcessedPath))
   {
+    if (SkipExisting)
+    {
+      NumSkipped++;
+      CJsonLine j("skipped");
+      j.AddUInt64("index", index);
+      j.Add("path", _filePath);
+      j.Print();
+      return S_OK;
+    }
     if (!DeleteFileAlways(fullProcessedPath))
     {
       PrintError("Cannot delete output file", fullProcessedPath);
@@ -861,8 +881,37 @@ static void PrintProps(CJsonLine &j, IInArchive *archive, UInt32 index, bool arc
   }
 }
 
+struct COptions
+{
+  bool PasswordIsDefined;
+  bool IndicesDefined;
+  bool SkipExisting;
+  UString Password;
+  CRecordVector<UInt32> Indices;
+
+  COptions(): PasswordIsDefined(false), IndicesDefined(false), SkipExisting(false) {}
+};
+
+// Parses "<index>[,<index>...]".
+static bool ParseIndices(const char *s, CRecordVector<UInt32> &indices)
+{
+  for (;;)
+  {
+    const char *end;
+    const UInt32 index = ConvertStringToUInt32(s, &end);
+    if (end == s)
+      return false;
+    indices.Add(index);
+    if (*end == 0)
+      return true;
+    if (*end != ',')
+      return false;
+    s = end + 1;
+  }
+}
+
 static int ProcessArchive(CPlugin &plugin, char command, const FString &archiveName,
-    const FString &outDir, bool passwordIsDefined, const UString &password)
+    const FString &outDir, const COptions &options)
 {
   GUID clsid;
   {
@@ -886,8 +935,8 @@ static int ProcessArchive(CPlugin &plugin, char command, const FString &archiveN
 
   CArchiveOpenCallback *openCallbackSpec = new CArchiveOpenCallback;
   CMyComPtr<IArchiveOpenCallback> openCallback(openCallbackSpec);
-  openCallbackSpec->PasswordIsDefined = passwordIsDefined;
-  openCallbackSpec->Password = password;
+  openCallbackSpec->PasswordIsDefined = options.PasswordIsDefined;
+  openCallbackSpec->Password = options.Password;
   {
     FString fileName;
     if (!GetFullPathAndSplit(archiveName, openCallbackSpec->FolderPrefix, fileName)
@@ -948,16 +997,20 @@ static int ProcessArchive(CPlugin &plugin, char command, const FString &archiveN
     CArchiveExtractCallback *extractCallbackSpec = new CArchiveExtractCallback;
     CMyComPtr<IArchiveExtractCallback> extractCallback(extractCallbackSpec);
     extractCallbackSpec->Init(archive, outDir);
-    extractCallbackSpec->PasswordIsDefined = passwordIsDefined;
-    extractCallbackSpec->Password = password;
+    extractCallbackSpec->PasswordIsDefined = options.PasswordIsDefined;
+    extractCallbackSpec->Password = options.Password;
+    extractCallbackSpec->SkipExisting = options.SkipExisting;
 
-    const HRESULT result = archive->Extract(NULL, (UInt32)(Int32)(-1), testMode ? 1 : 0, extractCallback);
+    const HRESULT result = options.IndicesDefined ?
+        archive->Extract(options.Indices.ConstData(), options.Indices.Size(), testMode ? 1 : 0, extractCallback) :
+        archive->Extract(NULL, (UInt32)(Int32)(-1), testMode ? 1 : 0, extractCallback);
 
     CJsonLine j("extract_result");
     j.Add("mode", testMode ? "test" : "extract");
     j.AddHex32("hresult", (UInt32)result);
     j.AddUInt64("items", extractCallbackSpec->NumItems);
     j.AddUInt64("errors", extractCallbackSpec->NumErrors);
+    j.AddUInt64("skipped", extractCallbackSpec->NumSkipped);
     if (extractCallbackSpec->TotalDefined)
       j.AddUInt64("total", extractCallbackSpec->Total);
     j.AddUInt64("completed", extractCallbackSpec->Completed);
@@ -989,18 +1042,28 @@ int Z7_CDECL main(int numArgs, const char *args[])
 
   FString pluginPath;
   char command = 0;
-  UString password;
-  bool passwordIsDefined = false;
+  COptions options;
   CObjectVector<FString> params;
 
   for (int i = 1; i < numArgs; i++)
   {
     const AString a (args[i]);
-    if (a.Len() >= 2 && a[0] == '-' && a[1] == 'p' && !passwordIsDefined)
+    if (a.IsPrefixedBy("-p") && !options.PasswordIsDefined)
     {
-      password = GetUnicodeString(a.Ptr(2));
-      passwordIsDefined = true;
+      options.Password = GetUnicodeString(a.Ptr(2));
+      options.PasswordIsDefined = true;
     }
+    else if (a.IsPrefixedBy("-i") && !options.IndicesDefined)
+    {
+      if (!ParseIndices(a.Ptr(2), options.Indices))
+      {
+        fputs(kHelpString, stderr);
+        return k_Exit_Usage;
+      }
+      options.IndicesDefined = true;
+    }
+    else if (a == "-s" && !options.SkipExisting)
+      options.SkipExisting = true;
     else if (pluginPath.IsEmpty())
       pluginPath = CmdStringToFString(a);
     else if (command == 0 && a.Len() == 1)
@@ -1020,7 +1083,9 @@ int Z7_CDECL main(int numArgs, const char *args[])
       fputs(kHelpString, stderr);
       return k_Exit_Usage;
   }
-  if (params.Size() != numParams)
+  if (params.Size() != numParams
+      || (options.IndicesDefined && command != 't' && command != 'x')
+      || (options.SkipExisting && command != 'x'))
   {
     fputs(kHelpString, stderr);
     return k_Exit_Usage;
@@ -1041,5 +1106,5 @@ int Z7_CDECL main(int numArgs, const char *args[])
     return ListFormats(plugin);
 
   return ProcessArchive(plugin, command, params[0],
-      numParams > 1 ? params[1] : FString(), passwordIsDefined, password);
+      numParams > 1 ? params[1] : FString(), options);
 }

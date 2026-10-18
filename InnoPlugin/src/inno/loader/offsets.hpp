@@ -59,6 +59,14 @@ struct offsets {
 	bool found_magic;
 	
 	/*!
+	 * Size of the installer file written by the compiler, in bytes
+	 *
+	 * Code signing appends a certificate after this size. A value of \c 0 means
+	 * that no offset table was found.
+	 */
+	boost::uint32_t total_size;
+	
+	/*!
 	 * Offset of compressed `setup.e32` (the actual installer code)
 	 *
 	 * A value of \c 0 means there is no setup.e32 embedded in this file

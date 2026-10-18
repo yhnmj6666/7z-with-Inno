@@ -155,7 +155,7 @@ bool offsets::load_offsets_at(std::istream & is, boost::uint32_t pos) {
 		}
 	}
 	
-	(void)checksum.load<boost::uint32_t>(is);
+	total_size = checksum.load<boost::uint32_t>(is);
 	exe_offset = checksum.load<boost::uint32_t>(is);
 	
 	if(version >= INNO_VERSION(4, 1, 6)) {
@@ -207,6 +207,7 @@ bool offsets::load_offsets_at(std::istream & is, boost::uint32_t pos) {
 void offsets::load(std::istream & is) {
 	
 	found_magic = false;
+	total_size = 0;
 	
 	/*
 	 * Try to load the offset table by following a pointer at a constant offset.
@@ -223,6 +224,8 @@ void offsets::load(std::istream & is) {
 	if(load_from_exe_resource(is)) {
 		return;
 	}
+	
+	total_size = 0;
 	
 	/*
 	 * If no offset table has been found, this must be an external setup-0.bin file.

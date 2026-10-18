@@ -1,1139 +1,662 @@
-// NsisIn.cpp
+// InnoIn.cpp
 
 #include "StdAfx.h"
 
-#include "CPP/Common/IntToString.h"
-#include "CPP/Common/StringToInt.h"
-#include "CPP/7zip/Common/LimitedStreams.h"
+#include <string.h>
+
+#include "CPP/Common/UTFConvert.h"
+#include "CPP/7zip/Archive/IArchive.h"
 #include "CPP/7zip/Common/StreamUtils.h"
-#include "CPP/Windows/TimeUtils.h"
-#include "CPP/7zip/IPassword.h"
 
 #include "InnoIn.h"
-#include "InnoUtils.h"
+#include "InnoInterop.h"
+#include "InnoPe.h"
+#include "InnoScript.h"
 
-#include "inno/setup/type.hpp"
 #include "inno/setup/component.hpp"
-#include "inno/setup/task.hpp"
+#include "inno/setup/delete.hpp"
 #include "inno/setup/directory.hpp"
-#include "inno/setup/file.hpp"
 #include "inno/setup/icon.hpp"
 #include "inno/setup/ini.hpp"
-#include "inno/setup/delete.hpp"
 #include "inno/setup/language.hpp"
 #include "inno/setup/message.hpp"
+#include "inno/setup/permission.hpp"
 #include "inno/setup/registry.hpp"
 #include "inno/setup/run.hpp"
-#include "inno/crypto/hasher.hpp"
-#include "inno/stream/chunk.hpp"
-#include "inno/stream/exefilter.hpp"
-#include "inno/util/load.hpp"
+#include "inno/setup/task.hpp"
+#include "inno/setup/type.hpp"
 #include "inno/util/log.hpp"
 
+#include <istream>
+#include <map>
+#include <set>
 #include <sstream>
-#include <filesystem>
-#include <unordered_set>
-
-#define Get16(p) GetUi16(p)
-#define Get32(p) GetUi32(p)
-
-// #define NUM_SPEED_TESTS 1000
 
 namespace NArchive {
 namespace NInno {
 
-static const char* const kMethods[] =
+static const size_t kMaxWarnings = 16;
+static const size_t kPeHeadersSize = (size_t)1 << 16;
+static const unsigned kChunkMagicSize = 4;
+static const unsigned kChunkSaltSize = 8;
+
+void Utf8ToUnicode(const std::string &src, UString &dest)
 {
-	"Copy"
-  , "Deflate"
-  , "BZip2"
-  , "LZMA"
-  , "LZMA2"
-  , "Unknown"
+  Convert_UTF8_Buf_To_Unicode(src.data(), src.size(), dest);
+}
+
+static const char * const kCompressionNames[] =
+  { "Copy", "Deflate", "BZip2", "LZMA", "LZMA2", "Unknown" };
+static const char * const kFilterNames[] =
+  { NULL, "IF4108", "IF5200", "IF5309", NULL };
+static const char * const kEncryptionName = "ARC4";
+
+static unsigned GetCompressionIndex(const stream::chunk &chunk)
+{
+  const unsigned i = (unsigned)chunk.compression;
+  return i < Z7_ARRAY_SIZE(kCompressionNames) ? i : Z7_ARRAY_SIZE(kCompressionNames) - 1;
+}
+
+static const char *GetFilterName(const stream::file &file)
+{
+  const unsigned i = (unsigned)file.filter;
+  return i < Z7_ARRAY_SIZE(kFilterNames) ? kFilterNames[i] : NULL;
+}
+
+AString GetMethodString(const setup::data_entry &entry)
+{
+  AString s (kCompressionNames[GetCompressionIndex(entry.chunk)]);
+  const char *filter = GetFilterName(entry.file);
+  if (filter)
+  {
+    s.Add_Space();
+    s += filter;
+  }
+  if (entry.chunk.encryption != stream::Plaintext)
+  {
+    s.Add_Space();
+    s += kEncryptionName;
+  }
+  return s;
+}
+
+void CInArchive::Clear()
+{
+  Stream.Release();
+  FileSize = 0;
+  PhySize = 0;
+  Offsets = loader::offsets();
+  Info = setup::info();
+  Items.clear();
+  Extras.clear();
+  Warnings.clear();
+  SolidEntries.clear();
+  IsSolid = false;
+  Method.Empty();
+  Comment.Empty();
+}
+
+UInt64 CInArchive::GetChunkEnd(const stream::chunk &chunk) const
+{
+  return (UInt64)Offsets.data_offset + chunk.offset + kChunkMagicSize
+      + (chunk.encryption != stream::Plaintext ? kChunkSaltSize : 0) + chunk.size;
+}
+
+void CInArchive::AddExtraFile(const std::string &name, const std::string *stored)
+{
+  CExtraFile extra;
+  extra.Name = name;
+  extra.Stored = stored;
+  Extras.push_back(extra);
+}
+
+static const char *GetTextExtension(const std::string &text)
+{
+  return (text.compare(0, 5, "{\\rtf") == 0) ? ".rtf" : ".txt";
+}
+
+void CInArchive::BuildExtraFiles()
+{
+  AddExtraFile("install_script.iss", NULL);
+  GenerateInstallScript(Info, Extras.back().Content);
+  const std::string &license = Info.header.license_text;
+  if (!license.empty())
+    AddExtraFile(std::string("License") + GetTextExtension(license), &license);
+  for (size_t i = 0; i < Info.languages.size(); i++)
+  {
+    AddExtraFile(Info.languages[i].name + ".isl", NULL);
+    GenerateLanguageFile(Info.languages[i], Extras.back().Content);
+  }
+  for (size_t i = 0; i < Info.languages.size(); i++)
+  {
+    const setup::language_entry &lang = Info.languages[i];
+    if (!lang.license_text.empty())
+      AddExtraFile(lang.name + GetTextExtension(lang.license_text), &lang.license_text);
+  }
+  for (size_t i = 0; i < Info.wizard_images.size(); i++)
+  {
+    std::ostringstream name;
+    name << "WizardImage" << i << ".bmp";
+    AddExtraFile(name.str(), &Info.wizard_images[i]);
+  }
+  for (size_t i = 0; i < Info.wizard_images_small.size(); i++)
+  {
+    std::ostringstream name;
+    name << "WizardImageSmall" << i << ".bmp";
+    AddExtraFile(name.str(), &Info.wizard_images_small[i]);
+  }
+}
+
+/*
+Item names: files that have data in the installer keep their destination path
+("{app}\file.txt"), extra files are listed under "embedded\". File names are
+never changed. Leading folders separate files, in this order:
+  "{x86}", "{x64}" or "{arm64}": the architecture of the Check parameter, or
+      of the 32bit / 64bit flags if the Check parameter does not select one.
+      If the files of any destination (the same ignoring case) differ in
+      architecture, every file with an architecture gets this folder, so that
+      the files of each architecture stay together. Otherwise no file does.
+  "{#component}": a Components parameter that is a single name,
+  "{@language}": a Languages parameter that is a single name. These two are
+      added only to files whose destinations are the same ignoring case, when
+      the property differs within that group.
+Then items whose paths are still taken get "{$1}", "{$2}", ... in item order.
+*/
+
+static const unsigned kArch_x86 = 1 << 0;
+static const unsigned kArch_x64 = 1 << 1;
+static const unsigned kArch_arm64 = 1 << 2;
+static const unsigned kArch_All = kArch_x86 | kArch_x64 | kArch_arm64;
+
+static const struct
+{
+  const char *Name;
+  unsigned Archs; // architectures where the function returns true
+} kArchFunctions[] =
+{
+  { "Is64BitInstallMode", kArch_x64 | kArch_arm64 },
+  { "IsWin64", kArch_x64 | kArch_arm64 },
+  { "IsX64Compatible", kArch_x64 | kArch_arm64 },
+  { "IsX64", kArch_x64 },
+  { "IsX64OS", kArch_x64 },
+  { "IsARM64", kArch_arm64 },
+  { "IsX86", kArch_x86 },
+  { "IsX86OS", kArch_x86 },
+  { "IsX86Compatible", kArch_All }
 };
 
-using std::make_unique;
-
-// Turns the stringified member expression "object.member_name" (or
-// "member-name") into "MemberName".
-inline std::string OSS_Clean(const std::string &s)
+static bool IsIdentStart(char c)
 {
-	const size_t lastDot = s.rfind('.');
-	const size_t start = (lastDot == std::string::npos) ? 0 : lastDot + 1;
-	std::string name;
-	bool wordStart = true;
-	for (size_t i = start; i < s.size(); i++)
-	{
-		const unsigned char c = (unsigned char)s[i];
-		if (c == '_' || c == '-')
-		{
-			wordStart = true;
-			continue;
-		}
-		name += wordStart ? (char)std::toupper(c) : (char)c;
-		wordStart = false;
-	}
-	return name;
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
 }
 
-inline std::string Flag_Clean(std::string s)
+static bool IsIdentChar(char c)
 {
-	auto wit = s.begin();
-	bool write = false;
-	for (auto rit = s.begin(); rit != s.end(); rit++)
-	{
-		if (isalnum(*rit))
-		{
-			if (write) 
-			{
-				*wit = *rit;
-			}
-			wit++;
-		}
-		else
-		{
-			write = true;
-		}
-	}
-	s.resize(wit - s.begin());
-	return s;
+  return IsIdentStart(c) || (c >= '0' && c <= '9');
 }
 
-void CInArchive::InitializeLog(std::string& filename)
+// Evaluates a Check expression of the functions in kArchFunctions, "and",
+// "or", "not" and parentheses for all architectures at once: each value is
+// the set of architectures where it is true.
+class CCheckEvaluator
 {
-	namespace fs = std::filesystem;
-	const std::chrono::time_point now{ std::chrono::system_clock::now() };
-	const time_t now_c = std::chrono::system_clock::to_time_t(now);
-	const tm now_tm = *std::localtime(&now_c);
-	std::ostringstream iss;
-	iss << filename << "_" << std::put_time(&now_tm, "%Y%m%d-%H%M%S") << ".log";
-	fs::path tempDir = fs::temp_directory_path();
-	fs::path logPath = tempDir / iss.str();
-	logger::log_path = logPath;
-}
+  const char *_cur;
+  const char *_end;
+  std::string _token; // identifier, "(" or ")"; empty at the end
+  bool _error;
 
-std::string CInArchive::GetLogPath()
+  void Next();
+  bool IsToken(const char *s) const { return StringsAreEqualNoCase_Ascii(_token.c_str(), s); }
+  unsigned ParseOr(unsigned depth);
+  unsigned ParseAnd(unsigned depth);
+  unsigned ParseFactor(unsigned depth);
+  unsigned SetError() { _error = true; return 0; }
+
+public:
+  // Returns false if the expression uses anything else.
+  bool Evaluate(const std::string &expr, unsigned &archs);
+};
+
+void CCheckEvaluator::Next()
 {
-    return logger::log_path.has_value() ? logger::log_path.value().string() : std::string();
+  while (_cur != _end && (*_cur == ' ' || *_cur == '\t' || *_cur == '\r' || *_cur == '\n'))
+    _cur++;
+  _token.clear();
+  if (_cur == _end)
+    return;
+  const char *start = _cur;
+  if (*_cur == '(' || *_cur == ')')
+    _cur++;
+  else if (IsIdentStart(*_cur))
+  {
+    while (_cur != _end && IsIdentChar(*_cur))
+      _cur++;
+  }
+  else
+  {
+    _error = true;
+    _cur = _end;
+    return;
+  }
+  _token.assign(start, _cur);
 }
 
-HRESULT CInArchive::Open(IInStream* stream, FILETIME modifiedTime)
+unsigned CCheckEvaluator::ParseOr(unsigned depth)
 {
-	_modifiedTime = modifiedTime;
-	_stream = stream;
-	_pInteropStream = make_unique<InteropStream>(stream);
-	_pInStream = make_unique<istream>(_pInteropStream.get());
-	_offsets.load(*_pInStream);
-	if (_offsets.found_magic)
-	{
-		if (OpenInfo())
-		{
-			FindCollideLocation();			
-			_embedded = CEmbeddedFiles(_info, _hasCollision, _modifiedTime);
-			return S_OK;
-		}
-		else
-			return S_FALSE;
-	}
-	return S_FALSE;
+  unsigned archs = ParseAnd(depth);
+  while (!_error && IsToken("or"))
+  {
+    Next();
+    archs |= ParseAnd(depth);
+  }
+  return archs;
 }
 
-UInt32 CInArchive::GetDataOffset()
+unsigned CCheckEvaluator::ParseAnd(unsigned depth)
 {
-	return _offsets.data_offset;
+  unsigned archs = ParseFactor(depth);
+  while (!_error && IsToken("and"))
+  {
+    Next();
+    archs &= ParseFactor(depth);
+  }
+  return archs;
 }
 
-UInt32 CInArchive::GetNumberOfItems()
+unsigned CCheckEvaluator::ParseFactor(unsigned depth)
 {
-	return static_cast<UInt32>(_info.files.size() + _embedded.GetNumberOfItems());
+  const unsigned kMaxDepth = 64;
+  if (_error || depth >= kMaxDepth)
+    return SetError();
+  if (IsToken("("))
+  {
+    Next();
+    const unsigned archs = ParseOr(depth + 1);
+    if (_error || !IsToken(")"))
+      return SetError();
+    Next();
+    return archs;
+  }
+  if (IsToken("not"))
+  {
+    Next();
+    return ~ParseFactor(depth + 1) & kArch_All;
+  }
+  for (unsigned i = 0; i < Z7_ARRAY_SIZE(kArchFunctions); i++)
+    if (IsToken(kArchFunctions[i].Name))
+    {
+      Next();
+      if (IsToken("("))
+      {
+        // Only a call without arguments.
+        Next();
+        if (!IsToken(")"))
+          return SetError();
+        Next();
+      }
+      return kArchFunctions[i].Archs;
+    }
+  return SetError();
 }
 
-UInt32 CInArchive::GetHeaderSize()
+bool CCheckEvaluator::Evaluate(const std::string &expr, unsigned &archs)
 {
-	return static_cast<UInt32>(_info.header.header_size);
+  _cur = expr.c_str();
+  _end = _cur + expr.size();
+  _error = false;
+  Next();
+  archs = ParseOr(0);
+  return !_error && _token.empty();
 }
 
-const char* CInArchive::GetMethod()
+static const char *GetArchName(const setup::file_entry &file)
 {
-	switch (_info.header.compression)
-	{
-	case stream::compression_method::Stored:
-		return kMethods[0];
-	case stream::compression_method::Zlib:
-		return kMethods[1];
-	case stream::compression_method::BZip2:
-		return kMethods[2];
-	case stream::compression_method::LZMA1:
-		return kMethods[3];
-	case stream::compression_method::LZMA2:
-		return kMethods[4];
-	case stream::compression_method::UnknownCompression:
-	default:
-		return kMethods[5];
-	}
+  unsigned archs = 0;
+  CCheckEvaluator evaluator;
+  if (evaluator.Evaluate(file.check, archs))
+  {
+    if (archs == kArch_x86)
+      return "x86";
+    if (archs == kArch_x64 || archs == (kArch_x64 | kArch_arm64))
+      return "x64";
+    if (archs == kArch_arm64)
+      return "arm64";
+  }
+  const bool bits32 = (file.options & setup::file_entry::Bits32) != 0;
+  const bool bits64 = (file.options & setup::file_entry::Bits64) != 0;
+  if (bits64 && !bits32)
+    return "x64";
+  if (bits32 && !bits64)
+    return "x86";
+  return NULL;
 }
 
-std::string CInArchive::GetComment()
+// Returns the name if expr is a single component or language name, as Inno
+// Setup checks them: letters, digits and "_", not starting with a digit.
+// Component names can contain "\" for subcomponents.
+static std::string GetSingleName(const std::string &expr, bool isComponent)
 {
-	std::ostringstream oss;
-
-	oss << "InnoSetupVersion = " << _info.version << std::endl;
-
-#define _OSS(s) \
-	if(!s.empty()) oss << OSS_Clean(#s) << " = " << s <<std::endl
-	_OSS(_info.header.app_name);
-	_OSS(_info.header.app_version);
-
-#undef _OSS
-	std::string s(oss.str());
-	return s;
+  const size_t start = expr.find_first_not_of(" \t");
+  if (start == std::string::npos)
+    return std::string();
+  const size_t end = expr.find_last_not_of(" \t") + 1;
+  const std::string name = expr.substr(start, end - start);
+  if (StringsAreEqualNoCase_Ascii(name.c_str(), "not")
+      || StringsAreEqualNoCase_Ascii(name.c_str(), "and")
+      || StringsAreEqualNoCase_Ascii(name.c_str(), "or"))
+    return std::string();
+  for (size_t i = 0; i < name.size(); i++)
+  {
+    const char c = name[i];
+    if (IsIdentStart(c) || (i != 0 && c >= '0' && c <= '9'))
+      continue;
+    if (isComponent && i != 0 && i + 1 != name.size() && (c == '\\' || c == '/'))
+      continue;
+    return std::string();
+  }
+  return name;
 }
 
-std::shared_ptr<CAbstractItem> CInArchive::GetItem(size_t index)
+// Replaces characters that Windows does not allow in file names.
+static void SanitizeLabel(std::string &s)
 {
-	using std::make_shared;
-	if (index >= _info.files.size())
-		return make_shared<CEmbeddedItem>(_embedded.GetItem(index - _info.files.size()));
-	else
-	{
-		const setup::file_entry& f = _info.files.at(index);
-		if (f.location == (uint32_t)(-1))
-			return make_shared<CItem>(CItem(f, setup::data_entry(),_hasCollision));
-		else
-			return make_shared<CItem>(CItem(f, _info.data_entries.at(f.location), _hasCollision));
-	}
+  for (size_t i = 0; i < s.size(); i++)
+  {
+    const unsigned char c = (unsigned char)s[i];
+    if (c < 0x20 || strchr("<>:\"/\\|?*", c))
+      s[i] = '_';
+  }
 }
 
-CInArchiveReadProgressQueryHelper CInArchive::GetReadProgressQueryHelper() const
+// Paths that differ only in case are the same file on Windows. Other hosts
+// ignore the case of ASCII letters only, so that the names do not depend on
+// the locale.
+static std::wstring GetPathKey(const UString &path)
 {
-	return CInArchiveReadProgressQueryHelper(this);
+  std::wstring key;
+  key.reserve(path.Len());
+  for (unsigned i = 0; i < path.Len(); i++)
+  {
+    wchar_t c = path[i];
+    #ifdef _WIN32
+    c = MyCharUpper(c);
+    #else
+    if (c >= 'a' && c <= 'z')
+      c = (wchar_t)(c - 0x20);
+    #endif
+    key += c;
+  }
+  return key;
 }
 
-bool CInArchive::CheckCollideLocations(UInt32 index, UInt32& firstAppearance)
+void CInArchive::BuildItems()
 {
-	if (_collisionLocations.empty())
-		return false;
-	if (index >= _info.files.size())
-		return false;
-	auto find_result = _collisionLocations.find(index);
-	if (find_result == _collisionLocations.end())
-	{
-		firstAppearance = (UInt32)(-1);
-		return false;
-	}
-	else
-	{
-		firstAppearance = static_cast<UInt32>(find_result->second);
-		return true;
-	}
+  std::vector<size_t> files;
+  for (size_t i = 0; i < Info.files.size(); i++)
+    if (Info.files[i].location < Info.data_entries.size())
+      files.push_back(i);
+  const size_t numItems = files.size() + Extras.size();
+
+  std::vector<UString> dests(numItems);
+  for (size_t k = 0; k < numItems; k++)
+  {
+    if (k < files.size())
+      Utf8ToUnicode(Info.files[files[k]].destination, dests[k]);
+    else
+      Utf8ToUnicode("embedded\\" + Extras[k - files.size()].Name, dests[k]);
+  }
+
+  std::vector<std::string> archs(files.size());
+  for (size_t k = 0; k < files.size(); k++)
+  {
+    const char *arch = GetArchName(Info.files[files[k]]);
+    if (arch)
+      archs[k] = arch;
+  }
+
+  std::map<std::wstring, std::vector<size_t> > groups;
+  for (size_t k = 0; k < files.size(); k++)
+    groups[GetPathKey(dests[k])].push_back(k);
+
+  bool useArch = false;
+  for (std::map<std::wstring, std::vector<size_t> >::const_iterator it = groups.begin();
+      it != groups.end(); ++it)
+  {
+    const std::vector<size_t> &group = it->second;
+    for (size_t j = 1; j < group.size(); j++)
+      if (archs[group[j]] != archs[group[0]])
+        useArch = true;
+  }
+
+  std::vector<std::string> folders(numItems);
+  if (useArch)
+    for (size_t k = 0; k < files.size(); k++)
+      if (!archs[k].empty())
+        folders[k] = "{" + archs[k] + "}\\";
+
+  for (std::map<std::wstring, std::vector<size_t> >::const_iterator it = groups.begin();
+      it != groups.end(); ++it)
+  {
+    const std::vector<size_t> &group = it->second;
+    if (group.size() < 2)
+      continue;
+    const unsigned kNumProps = 2;
+    static const char * const kPrefixes[kNumProps] = { "{#", "{@" };
+    std::vector<std::string> labels[kNumProps];
+    for (size_t j = 0; j < group.size(); j++)
+    {
+      const setup::file_entry &file = Info.files[files[group[j]]];
+      labels[0].push_back(GetSingleName(file.components, true));
+      labels[1].push_back(GetSingleName(file.languages, false));
+    }
+    for (unsigned p = 0; p < kNumProps; p++)
+    {
+      bool differ = false;
+      for (size_t j = 1; j < group.size(); j++)
+        if (!StringsAreEqualNoCase_Ascii(labels[p][j].c_str(), labels[p][0].c_str()))
+          differ = true;
+      if (!differ)
+        continue;
+      for (size_t j = 0; j < group.size(); j++)
+      {
+        std::string label = labels[p][j];
+        if (label.empty())
+          continue;
+        SanitizeLabel(label);
+        folders[group[j]] += kPrefixes[p] + label + "}\\";
+      }
+    }
+  }
+
+  std::set<std::wstring> used;
+  std::map<std::wstring, unsigned> lastNumbers;
+  Items.reserve(numItems);
+  for (size_t k = 0; k < numItems; k++)
+  {
+    CItem item;
+    UString folder;
+    Utf8ToUnicode(folders[k], folder);
+    item.Path = folder + dests[k];
+    const std::wstring key = GetPathKey(item.Path);
+    if (!used.insert(key).second)
+    {
+      unsigned &n = lastNumbers[key];
+      for (;;)
+      {
+        UString path = folder;
+        path += "{$";
+        path.Add_UInt32(++n);
+        path += "}\\";
+        path += dests[k];
+        if (used.insert(GetPathKey(path)).second)
+        {
+          item.Path = path;
+          break;
+        }
+      }
+    }
+    #if WCHAR_PATH_SEPARATOR != L'\\'
+    item.Path.Replace(L'\\', WCHAR_PATH_SEPARATOR);
+    #endif
+    if (k < files.size())
+    {
+      item.FileIndex = (int)files[k];
+      item.ExtraIndex = 0;
+      item.Size = Info.data_entries[Info.files[files[k]].location].file.size;
+    }
+    else
+    {
+      item.FileIndex = -1;
+      item.ExtraIndex = (unsigned)(k - files.size());
+      item.Size = Extras[item.ExtraIndex].GetData().size();
+    }
+    Items.push_back(item);
+  }
 }
 
-HRESULT CInArchive::ExtractItem(UInt32 indice, bool testMode, InteropFileStreamProgressWriter* outStream, Int32& opRes, std::string* savedBuffer)
+void CInArchive::ComputeSizes(const Byte *peHeaders, size_t peHeadersSize)
 {
-	opRes = NExtract::NOperationResult::kOK;
-	size_t indice64 = indice;
-	if (indice64 >= _info.files.size())
-		return _embedded.ExtractItem(indice64 - _info.files.size(), testMode, outStream);
-	setup::file_entry& file_info = _info.files[indice64];
-	if (file_info.location >= _info.data_entries.size())
-	{
-		if (file_info.location == (uint32_t)(-1))
-			return S_OK;
-		else
-			return S_FALSE;
-	}
-	if (_offsets.data_offset == 0)
-	{
-		//TODO: implement multi-part setup files.
-		throw NotImplemented("disk spanning");
-	}
-	const setup::data_entry& data_info = _info.data_entries[file_info.location];
-	const stream::chunk& chunk = data_info.chunk;
-	const stream::file& file = data_info.file;
+  // Data entries in the same chunk are solid.
+  std::map<stream::chunk, size_t> chunkEntries;
+  for (size_t i = 0; i < Info.data_entries.size(); i++)
+    chunkEntries[Info.data_entries[i].chunk]++;
+  SolidEntries.resize(Info.data_entries.size());
+  for (size_t i = 0; i < Info.data_entries.size(); i++)
+  {
+    SolidEntries[i] = (chunkEntries[Info.data_entries[i].chunk] > 1);
+    if (SolidEntries[i])
+      IsSolid = true;
+  }
 
-	if (chunk.encryption != stream::Plaintext && password.empty())
-	{
-		opRes = NExtract::NOperationResult::kUnsupportedMethod;
-		return S_OK;
-	}
+  // The archive method lists the methods, filters and encryption of all files.
+  bool compressions[Z7_ARRAY_SIZE(kCompressionNames)] = { false };
+  bool filters[Z7_ARRAY_SIZE(kFilterNames)] = { false };
+  bool encrypted = false;
+  for (size_t i = 0; i < Items.size(); i++)
+  {
+    if (Items[i].FileIndex < 0)
+      continue;
+    const setup::data_entry &entry = GetDataEntry(Items[i]);
+    compressions[GetCompressionIndex(entry.chunk)] = true;
+    if (GetFilterName(entry.file))
+      filters[(unsigned)entry.file.filter] = true;
+    if (entry.chunk.encryption != stream::Plaintext)
+      encrypted = true;
+  }
+  for (unsigned i = 0; i < Z7_ARRAY_SIZE(kCompressionNames); i++)
+    if (compressions[i])
+    {
+      Method.Add_Space_if_NotEmpty();
+      Method += kCompressionNames[i];
+    }
+  for (unsigned i = 0; i < Z7_ARRAY_SIZE(kFilterNames); i++)
+    if (filters[i])
+    {
+      Method.Add_Space_if_NotEmpty();
+      Method += kFilterNames[i];
+    }
+  if (encrypted)
+  {
+    Method.Add_Space_if_NotEmpty();
+    Method += kEncryptionName;
+  }
 
-	crypto::hasher hasher(file.checksum.type);
-	if (file.size != 0)
-	{
-		HRESULT res = S_OK;
-		if (!_chunkDecoder.IsOpen(chunk) || _chunkDecoder.GetPos() > file.offset)
-			res = _chunkDecoder.Open(_stream, _offsets.data_offset, chunk, password);
-		if (res == S_OK)
-			res = _chunkDecoder.SkipTo(file.offset);
-		if (res != S_OK)
-		{
-			_chunkDecoder.Close();
-			if (res == E_NOTIMPL)
-				opRes = NExtract::NOperationResult::kUnsupportedMethod;
-			else if (res == S_FALSE)
-				opRes = NExtract::NOperationResult::kDataError;
-			else
-				return res;
-			return S_OK;
-		}
-
-		const size_t kBufSize = (size_t)1 << 16;
-		if (_extractBuf.Size() == 0)
-			_extractBuf.Alloc(kBufSize);
-		Byte* buf = _extractBuf;
-		stream::inno_exe_decoder_4108 decoder4108;
-		stream::inno_exe_decoder_5200 decoder5200(file.filter == stream::InstructionFilter5309);
-		UInt64 rem = file.size;
-		size_t held = 0;
-		while (rem != 0 || held != 0)
-		{
-			size_t size = kBufSize - held;
-			if (size > rem)
-				size = (size_t)rem;
-			const size_t requested = size;
-			res = _chunkDecoder.Read(buf + held, size);
-			if (res != S_OK && res != S_FALSE)
-				return res;
-			if (res == S_FALSE || size != requested)
-			{
-				_chunkDecoder.Close();
-				opRes = (res == S_OK) ?
-					NExtract::NOperationResult::kUnexpectedEnd :
-					NExtract::NOperationResult::kDataError;
-				return S_OK;
-			}
-			rem -= size;
-			const size_t avail = held + size;
-			size_t done = avail;
-			switch (file.filter)
-			{
-			case stream::InstructionFilter4108:
-				decoder4108.decode(buf, avail);
-				break;
-			case stream::InstructionFilter5200:
-			case stream::InstructionFilter5309:
-				done = decoder5200.decode(buf, avail, rem == 0);
-				break;
-			default:
-				break;
-			}
-			hasher.update((const char*)buf, done);
-			if (savedBuffer != nullptr)
-				savedBuffer->append((const char*)buf, done);
-			if (!testMode)
-			{
-				RINOK(outStream->Write((const char*)buf, done));
-			}
-			held = avail - done;
-			if (held != 0)
-				memmove(buf, buf + done, held);
-		}
-	}
-
-	if (hasher.finalize() != file.checksum)
-		opRes = NExtract::NOperationResult::kCRCError;
-	return S_OK;
+  // The compiler writes the size of the installer to the offset table.
+  // Signing appends a certificate.
+  UInt64 phySize = Offsets.total_size;
+  if (Offsets.data_offset != 0)
+    for (size_t i = 0; i < Info.data_entries.size(); i++)
+    {
+      const UInt64 end = GetChunkEnd(Info.data_entries[i].chunk);
+      if (phySize < end)
+        phySize = end;
+    }
+  CPeHeaders pe;
+  if (ParsePeHeaders(peHeaders, peHeadersSize, pe) == k_IsArc_Res_YES && pe.CertSize != 0)
+  {
+    const UInt64 end = (UInt64)pe.CertPos + pe.CertSize;
+    if (phySize < end)
+      phySize = end;
+  }
+  PhySize = phySize;
 }
 
-bool CInArchive::OpenInfo()
+HRESULT CInArchive::Open(IInStream *stream)
 {
-	setup::info::entry_types entries = setup::info::entry_types::all();
+  Clear();
+  RINOK(InStream_GetSize_SeekToEnd(stream, FileSize))
+  RINOK(InStream_SeekToBegin(stream))
+  size_t peSize = kPeHeadersSize;
+  if (peSize > FileSize)
+    peSize = (size_t)FileSize;
+  CByteBuffer peHeaders(peSize);
+  RINOK(ReadStream(stream, peHeaders, &peSize))
+  if (peSize < 2 || peHeaders[0] != 'M' || peHeaders[1] != 'Z')
+    return S_FALSE;
 
-	_pInStream->seekg(_offsets.header_offset);
-	try {
-		_info.load(*_pInStream, entries);
-	}
-	catch (const std::exception& e)
-	{
-		std::cout << "Stream error while parsing setup headers!\n";
-		std::cout << " |-- detected setup version: " << _info.version << '\n';
-		std::cout << " --- error reason: " << e.what();
-		return false;
-	}
-	return true;
+  bool ok = false;
+  CInStreamBuf streamBuf(stream);
+  log_capture capture;
+  try
+  {
+    std::istream is(&streamBuf);
+    Offsets.load(is);
+    if (Offsets.found_magic)
+    {
+      is.clear();
+      is.seekg(Offsets.header_offset);
+      Info.load(is, setup::info::entry_types::all());
+      ok = true;
+    }
+    else
+      debug("no setup loader found");
+  }
+  catch (const std::exception &e)
+  {
+    log_error << "cannot parse the setup headers: " << e.what();
+  }
+  capture.restore();
+  if (ok)
+  {
+    size_t numWarnings = 0;
+    std::set<std::string> seen;
+    const std::vector<log_capture::message> &messages = capture.get();
+    for (size_t i = 0; i < messages.size(); i++)
+    {
+      if (messages[i].level < logger::Warning || !seen.insert(messages[i].text).second)
+        continue;
+      if (numWarnings++ < kMaxWarnings)
+        Warnings.push_back(messages[i].text);
+    }
+    if (numWarnings > kMaxWarnings)
+    {
+      std::ostringstream oss;
+      oss << (numWarnings - kMaxWarnings) << " more warnings";
+      Warnings.push_back(oss.str());
+    }
+  }
+  capture.flush();
+  if (!ok)
+  {
+    Clear();
+    // A read error or E_ABORT from the stream ends the data while parsing.
+    const HRESULT res = streamBuf.GetError();
+    return res != S_OK ? res : S_FALSE;
+  }
+
+  Stream = stream;
+  BuildExtraFiles();
+  BuildItems();
+  ComputeSizes(peHeaders, peSize);
+
+  std::ostringstream comment;
+  comment << "InnoSetupVersion = " << Info.version << '\n';
+  if (!Info.header.app_name.empty())
+    comment << "AppName = " << Info.header.app_name << '\n';
+  if (!Info.header.app_version.empty())
+    comment << "AppVersion = " << Info.header.app_version << '\n';
+  Utf8ToUnicode(comment.str(), Comment);
+  return S_OK;
 }
 
-void CInArchive::FindCollideLocation()
-{
-	//check for collision, both locations and file names
-	std::unordered_map<size_t, size_t> unique_locations; // map of unique locations to their first appearance
-	std::unordered_set<std::string> unique_paths;
-	for (size_t i = 0; i < _info.files.size(); i++)
-	{
-		auto insert_result = unique_locations.insert(std::make_pair(_info.files[i].location, i));
-		if (insert_result.second == false)
-		{
-			_collisionLocations.emplace(i, insert_result.first->second);
-		}
-		auto path_result = unique_paths.insert(_info.files[i].destination);
-		if (path_result.second == false)
-		{
-			_hasCollision = true;
-		}
-	}
-}
-
-CEmbeddedFiles::CEmbeddedFiles(setup::info& info, bool hasCollision, FILETIME time)
-	: _pinfo(&info), _hasCollision(hasCollision)
-{
-	_time = NWindows::NTime::FileTime_To_UnixTime64(time);
-}
-
-size_t CEmbeddedFiles::GetNumberOfItems() const
-{
-	// add more files
-	size_t additionalItems = 1; // inno setup script
-	additionalItems += (_pinfo->header.license_text.empty() ? 0 : 1); // license file
-	additionalItems += _pinfo->languages.size(); // language files
-	for (const auto& lang : _pinfo->languages)
-	{
-		additionalItems += (lang.license_text.empty() ? 0 : 1); // language specific license file
-	}
-	additionalItems += _pinfo->wizard_images.size(); // wizard images
-	additionalItems += _pinfo->wizard_images_small.size(); // wizard images small
-	return additionalItems;
-}
-
-CEmbeddedItem CEmbeddedFiles::GetItem(size_t index) const
-{
-	if (index == 0)
-	{
-		return GenerateInstallScript();
-	}
-	index -= 1;
-
-	if (index == 0)
-	{
-		return GenerateLicense();
-	}
-	index -= 1;
-	
-	if (index < _pinfo->languages.size())
-	{
-		return GenerateLanguageFile(index);
-	}
-	index -= _pinfo->languages.size();
-	
-	{
-		size_t i = 0;
-		while (i < _pinfo->languages.size())
-		{
-			if (!_pinfo->languages[i].license_text.empty())
-			{
-				if (index == 0)
-				{
-					return GenerateLanguageLicense(i);
-				}
-				index -= 1;
-			}
-			i++;
-		}
-	}
-
-	if (index < _pinfo->wizard_images.size())
-	{
-		return GenerateWizardImage(index);
-	}
-	index -= _pinfo->wizard_images.size();
-
-	if (index < _pinfo->wizard_images_small.size())
-	{
-		return GenerateWizardImageSmall(index);
-	}
-	index -= _pinfo->wizard_images_small.size();
-	
-	return CEmbeddedItem();
-}
-
-HRESULT CEmbeddedFiles::ExtractItem(size_t indice, bool testMode, InteropFileStreamProgressWriter* outStream) const
-{
-	bool generated = false;
-	std::string data;
-	size_t dataSize=0;
-	if (!generated && indice == 0)
-	{
-		dataSize = GenerateInstallScriptContent(data);
-		generated = true;
-	}
-	indice -= 1;
-	
-	if (!generated && indice == 0)
-	{
-		dataSize = GenerateLicenseContent(data);
-		generated = true;
-	}
-	indice -= 1;
-	
-	if (!generated && indice < _pinfo->languages.size())
-	{
-		dataSize = GenerateLanguageFileContent(indice, data);
-		generated = true;
-	}
-	
-	if (!generated)
-	{
-		indice -= _pinfo->languages.size();
-		size_t i = 0;
-		while (i < _pinfo->languages.size())
-		{
-			if (!_pinfo->languages[i].license_text.empty())
-			{
-				if (indice == 0)
-				{
-					dataSize = GenerateLanguageLicenseContent(i, data);
-					generated = true;
-					break;
-				}
-				indice -= 1;
-			}
-			i++;
-		}
-	}
-
-	if (!generated && indice < _pinfo->wizard_images.size())
-	{
-		dataSize = GenerateWizardImageContent(indice, data);
-		generated = true;
-	}
-	indice -= _pinfo->wizard_images.size();
-	
-	if (!generated && indice < _pinfo->wizard_images_small.size())
-	{
-		dataSize = GenerateWizardImageSmallContent(indice, data);
-		generated = true;
-	}
-	indice -= _pinfo->wizard_images_small.size();
-	
-	if (!testMode && generated)
-	{
-		RINOK(outStream->Write(data.data(), dataSize));
-	}
-	return S_OK;
-}
-
-CEmbeddedItem CEmbeddedFiles::GenerateInstallScript() const
-{
-	return CEmbeddedItem(
-		"install_script.iss",
-		0,
-		GetMethod(),
-		_time
-	);
-}
-
-size_t CEmbeddedFiles::GenerateInstallScriptContent(std::string & outData) const
-{
-	using std::ostringstream;
-	using std::endl;
-	ostringstream oss;
-	oss << "; InnoSetupVersion=" << _pinfo->version << endl;
-	oss << endl;
-
-	{
-		oss << "[Setup]" << endl;
-#		define _OSSL(s) if (!s.empty()) oss << OSS_Clean(#s) << "=" << s << "\n"
-#		define _OSSL2(s,n) if (!s.empty()) oss << n << "=" << s << "\n"
-		_OSSL(_pinfo->header.app_name);
-		_OSSL(_pinfo->header.app_versioned_name);
-		_OSSL(_pinfo->header.app_id);
-		_OSSL(_pinfo->header.app_version);
-		_OSSL(_pinfo->header.app_publisher);
-		_OSSL(_pinfo->header.app_publisher_url);
-		_OSSL(_pinfo->header.app_support_phone);
-		_OSSL(_pinfo->header.app_support_url);
-		_OSSL(_pinfo->header.app_updates_url);
-		_OSSL(_pinfo->header.app_mutex);
-		_OSSL(_pinfo->header.app_comments);
-		_OSSL(_pinfo->header.app_modify_path);
-		if (_pinfo->header.options & setup::header::CreateAppDir)
-		{
-			_OSSL(_pinfo->header.default_dir_name);
-		}
-		else
-		{
-			oss << "CreateAppDir=no\n";
-		}
-		if (_pinfo->header.default_group_name != "(Default)")
-		{
-			_OSSL(_pinfo->header.default_group_name);
-		}
-		_OSSL2(_pinfo->header.uninstall_icon, "UninstallDisplayIcon");
-		_OSSL2(_pinfo->header.uninstall_icon_name,"UninstallDisplayName");
-		
-#		undef _OSSL
-#		undef _OSSL2
-		oss << "; uncompleted" << endl;
-	}
-
-	// Types
-	if(!_pinfo->types.empty())
-	{
-		oss << "[Types]" << endl;  // optional
-		for (const auto& i : _pinfo->types)
-		{
-			oss << "Name: \"" << i.name << '"';
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"';
-			_OSS(i.description);
-			_OSS(i.check);
-#			undef _OSS
-			if (i.custom_type)
-			{
-				oss << "; Flags: iscustom";
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// Components
-	if(!_pinfo->components.empty())
-	{
-		oss << "[Components]" << endl; // optional
-		for (const auto& i : _pinfo->components)
-		{
-			oss << "Name: \"" << i.name << '"';
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s) << ": \"" << s << '"'
-#			define _OSSN(s) if (0!=s) oss << "; "<<OSS_Clean(#s) << ": " << s
-			_OSS(i.description);
-			_OSS(i.types);
-			_OSSN(i.extra_disk_pace_required);
-			_OSS(i.check);
-#			undef _OSS
-#			undef _OSSN
-			using enum_type = std::remove_reference_t<decltype(i)>::flags_Enum_;
-			bool first_flag = true;
-			for (size_t j = 0; j < i.options.bits; j++)
-			{
-				if (i.options.has(static_cast<enum_type>(j)))
-				{
-					if (first_flag)
-					{
-						oss << "; Flags:";
-						first_flag = false;
-					}
-					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
-				}
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// Tasks
-	if (!_pinfo->tasks.empty())
-	{
-		oss << "[Tasks]" << endl; // optional
-		for (const auto& i : _pinfo->tasks)
-		{
-			oss << "Name: \"" << i.name << '"';
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
-#			define _OSS2(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": " << s 
-			_OSS(i.description);
-			_OSS(i.group_description);
-			_OSS2(i.components);
-			_OSS(i.check);
-#			undef _OSS
-#			undef _OSS2
-			using enum_type = std::remove_reference_t<decltype(i)>::flags_Enum_;
-			bool first_flag = true;
-			for (size_t j = 0; j < i.options.bits; j++)
-			{
-				if (i.options.has(static_cast<enum_type>(j)))
-				{
-					if (first_flag)
-					{
-						oss << "; Flags:";
-						first_flag = false;
-					}
-					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
-				}
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// Dir
-	if(!_pinfo->directories.empty())
-	{
-		oss << "[Dir]" << endl; // optional
-		for (const auto& i : _pinfo->directories)
-		{
-			oss << "Name: \"" << i.name << '"';
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
-			_OSS(i.permissions);
-			//_OSS(i.attributes);
-			_OSS(i.check);
-#			undef _OSS
-			using enum_type = std::remove_reference_t<decltype(i)>::flags_Enum_;
-			bool first_flag = true;
-			for (size_t j = 0; j < i.options.bits; j++)
-			{
-				if (i.options.has(static_cast<enum_type>(j)))
-				{
-					if (first_flag)
-					{
-						oss << "; Flags:";
-						first_flag = false;
-					}
-					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
-				}
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// File
-	{
-		oss << "[File]" << endl;
-		for (const auto& i : _pinfo->files)
-		{
-			oss << "Source: \"" << (i.source.empty() ? i.destination : i.source) << '"';
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
-#			define _OSS2(s,d) if (!s.empty()) oss << "; " d ": \"" << s << '"'
-#			define _OSSN(s) if (0!=s) oss << "; "<<OSS_Clean(#s) << ": " << s
-			size_t sep=i.destination.find_last_of('\\');
-			if (sep != std::string::npos)
-			{
-				std::string_view destDir = std::string_view(i.destination.data(),sep);
-				std::string_view destName = std::string_view(i.destination.data()+sep+1);
-				_OSS2(destDir, "DestDir");
-				_OSS2(destName, "DestName");
-			}
-			else
-			{
-				_OSS2(i.destination,"DestDir");
-			}
-			_OSSN(i.external_size);
-			//_OSS(i.attributes);
-			//_OSS(i.permission);
-			_OSS2(i.install_font_name,"FontInstall");
-			_OSS(i.strong_assembly_name);
-			_OSS(i.check);
-#			undef _OSS
-#			undef _OSS2
-#			undef _OSSN
-			using enum_type = std::remove_reference_t<decltype(i)>::flags_Enum_;
-			bool first_flag = true;
-			for (size_t j = 0; j < i.options.bits; j++)
-			{
-				if (i.options.has(static_cast<enum_type>(j)))
-				{
-					if (first_flag)
-					{
-						oss << "; Flags:";
-						first_flag = false;
-					}
-					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
-				}
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// Icons
-	{
-		oss << "[Icons]" << endl;
-		for (const auto& i : _pinfo->icons)
-		{
-			oss << "Name: \"" << i.name << '"';
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
-#			define _OSS2(s,d) if (!s.empty()) oss << "; " d ": \"" << s << '"'
-#			define _OSSN(s) if (0!=s) oss << "; "<<OSS_Clean(#s) << ": " << s
-			_OSS(i.filename);
-			_OSS(i.parameters);
-			_OSS(i.working_dir);
-			//_OSS(i.hotkey);
-			_OSS(i.comment);
-			_OSS2(i.icon_file,"IconFilename");
-			_OSSN(i.icon_index);
-			_OSS(i.app_user_model_id);
-			_OSS(i.app_user_model_toast_activator_clsid);
-			_OSS(i.check);
-#			undef _OSS
-#			undef _OSS2
-#			undef _OSSN
-			using enum_type = std::remove_reference_t<decltype(i)>::flags_Enum_;
-			bool first_flag = true;
-			for (size_t j = 0; j < i.options.bits; j++)
-			{
-				if (i.options.has(static_cast<enum_type>(j)))
-				{
-					if (first_flag)
-					{
-						oss << "; Flags:";
-						first_flag = false;
-					}
-					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
-				}
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// INI
-	if(!_pinfo->ini_entries.empty())
-	{
-		oss << "[INI]" << endl; // optional
-		for (const auto& i : _pinfo->ini_entries)
-		{
-			oss << "Filename: \"" << i.inifile << '"';
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
-#			define _OSS2(s,d) if (!s.empty()) oss << "; " d ": \"" << s << '"'
-			_OSS(i.section);
-			_OSS(i.key);
-			_OSS2(i.value,"String");
-			_OSS(i.check);
-#			undef _OSS
-#			undef _OSS2
-			using enum_type = std::remove_reference_t<decltype(i)>::flags_Enum_;
-			bool first_flag = true;
-			for (size_t j = 0; j < i.options.bits; j++)
-			{
-				if (i.options.has(static_cast<enum_type>(j)))
-				{
-					if (first_flag)
-					{
-						oss << "; Flags:";
-						first_flag = false;
-					}
-					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
-				}
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// InstallDelete
-	if(!_pinfo->delete_entries.empty())
-	{
-		oss << "[InstallDelete]" << endl; // optional
-		for (const auto& i : _pinfo->delete_entries)
-		{
-			using enum_type = std::remove_reference_t<decltype(i)>::target_type;
-			static_assert(enum_names<enum_type>::named == 1);
-			oss << "Type: " << Flag_Clean(enum_names<enum_type>::names[i.type]);
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
-			_OSS(i.name);
-			_OSS(i.check);
-#			undef _OSS
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// Languages
-	{
-		oss << "[Languages]" << endl;
-		for (const auto& i : _pinfo->languages)
-		{
-			oss << "Name: \"" << i.name << '"';
-			oss << "; MessagesFile: \"embedded\\" << i.name << ".isl\"";
-			if (!i.license_text.empty())
-			{
-				oss << "; LicenseFile: \"embedded\\" << i.name << ".rtf\"";
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// CustomMessages
-	if (!_pinfo->messages.empty())
-	{
-		oss << "[CustomMessages]" << endl; // optional
-		for (const auto& i : _pinfo->messages)
-		{
-			using namespace std::literals;
-			if (i.language != -1)
-			{
-				oss << _pinfo->languages[i.language].name << '.';
-			}
-			std::string unescaped_value = ReplaceString(i.value, "\n"s, "\\n"s);
-			unescaped_value = ReplaceString(unescaped_value, "\r"s, "\\r"s);
-			oss << i.name << '=' << unescaped_value << endl;
-		}
-		oss << endl;
-	}
-	// Registry
-	if(!_pinfo->registry_entries.empty())
-	{
-		oss << "[Registry]" << endl;
-		for (const auto& i : _pinfo->registry_entries)
-		{
-			using hive_name = std::remove_reference_t<decltype(i)>::hive_name;
-			using value_type = std::remove_reference_t<decltype(i)>::value_type;
-			static_assert(enum_names<hive_name>::named == 1);
-			static_assert(enum_names<value_type>::named == 1);
-			oss << "Root: " << Flag_Clean(enum_names<hive_name>::names[i.hive]);
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
-#			define _OSS2(s,d) if (!s.empty()) oss << "; " d ": \"" << s << '"'
-			_OSS2(i.key, "Subkey");
-			oss << "; ValueType: " << Flag_Clean(enum_names<value_type>::names[i.type]);
-			_OSS2(i.name, "ValueName");
-			_OSS2(i.value,"ValueData");
-			_OSS(i.permissions);
-			_OSS(i.check);
-#			undef _OSS			
-#			undef _OSS2
-			using enum_type = std::remove_reference_t<decltype(i)>::flags_Enum_;
-			bool first_flag = true;
-			for (size_t j = 0; j < i.options.bits; j++)
-			{
-				if (i.options.has(static_cast<enum_type>(j)))
-				{
-					if (first_flag)
-					{
-						oss << "; Flags:";
-						first_flag = false;
-					}
-					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
-				}
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// Run
-	if (!_pinfo->run_entries.empty())
-	{
-		oss << "[Run]" << endl; // optional
-		for (const auto& i : _pinfo->run_entries)
-		{
-			oss << "Filename: \"" << i.name << '"';
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
-#			define _OSS2(s,d) if (!s.empty()) oss << "; " d ": \"" << s << '"'
-			_OSS(i.description);
-			_OSS(i.parameters);
-			_OSS(i.working_dir);
-			_OSS2(i.status_message, "StatusMsg");
-			_OSS(i.run_once_id);
-			_OSS(i.verb);
-			_OSS(i.check);
-#			undef _OSS
-#			undef _OSS2
-			using enum_type = std::remove_reference_t<decltype(i)>::flags_Enum_;
-			bool first_flag = true;
-			for (size_t j = 0; j < i.options.bits; j++)
-			{
-				if (i.options.has(static_cast<enum_type>(j)))
-				{
-					if (first_flag)
-					{
-						oss << "; Flags:";
-						first_flag = false;
-					}
-					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
-				}
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// UninstallDelete
-	if (!_pinfo->uninstall_delete_entries.empty())
-	{
-		oss << "[UninstallDelete]" << endl; // optional
-		for (const auto& i : _pinfo->uninstall_delete_entries)
-		{
-			using enum_type = std::remove_reference_t<decltype(i)>::target_type;
-			static_assert(enum_names<enum_type>::named == 1);
-			oss << "Type: " << Flag_Clean(enum_names<enum_type>::names[i.type]);
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
-			_OSS(i.name);
-			_OSS(i.check);
-#			undef _OSS
-			oss << endl;
-		}
-		oss << endl;
-	}
-	// Uninstall Run
-	if (!_pinfo->uninstall_run_entries.empty())
-	{
-		oss << "[UninstallRun]" << endl; // optional
-		for (const auto& i : _pinfo->uninstall_run_entries)
-		{
-			oss << "Filename: \"" << i.name << '"';
-#			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
-#			define _OSS2(s,d) if (!s.empty()) oss << "; " d ": \"" << s << '"'
-			_OSS(i.description);
-			_OSS(i.parameters);
-			_OSS(i.working_dir);
-			_OSS2(i.status_message, "StatusMsg");
-			_OSS(i.run_once_id);
-			_OSS(i.verb);
-			_OSS(i.check);
-#			undef _OSS
-#			undef _OSS2
-			using enum_type = std::remove_reference_t<decltype(i)>::flags_Enum_;
-			bool first_flag = true;
-			for (size_t j = 0; j < i.options.bits; j++)
-			{
-				if (i.options.has(static_cast<enum_type>(j)))
-				{
-					if (first_flag)
-					{
-						oss << "; Flags:";
-						first_flag = false;
-					}
-					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
-				}
-			}
-			oss << endl;
-		}
-		oss << endl;
-	}
-
-	outData = oss.str();
-	return outData.length();
-}
-
-CEmbeddedItem CEmbeddedFiles::GenerateLicense() const
-{
-	return CEmbeddedItem(
-		"License.rtf",
-		_pinfo->header.license_text.size(),
-		GetMethod(),
-		_time
-	);
-}
-
-size_t CEmbeddedFiles::GenerateLicenseContent(std::string & outData) const
-{
-	outData = _pinfo->header.license_text;
-	return _pinfo->header.license_text.length();
-}
-
-CEmbeddedItem CEmbeddedFiles::GenerateLanguageFile(size_t langIndex) const
-{
-	const auto& lang = _pinfo->languages[langIndex];
-	return CEmbeddedItem(
-		lang.name+".isl",
-		0,
-		GetMethod(),
-		_time
-	);
-}
-
-size_t CEmbeddedFiles::GenerateLanguageFileContent(size_t langIndex, std::string& outData) const
-{
-	using std::ostringstream;
-	using std::endl;
-	ostringstream oss;
-	oss << "[LangOptions]" << endl;
-	const auto& lang = _pinfo->languages[langIndex];
-#	define _OSSL(s) if (!s.empty()) oss << OSS_Clean(#s) << "=" << s << "\n"
-#	define _OSSLN(s) oss << OSS_Clean(#s) << "=" << s << "\n"
-#	define _OSSL2(s,n) if (!s.empty()) oss << n << "=" << s << "\n"
-#	define _OSSLN2(s,n) oss << n << "=" << s << "\n"
-	_OSSL(lang.language_name);
-	// use hex instead "${hex of language id}"?
-	_OSSLN(lang.language_id);
-	_OSSLN2(lang.codepage,"LanguageCodePage");
-	_OSSL2(lang.dialog_font,"DialogFontName");
-	_OSSL2(lang.title_font,"TitleFontName");
-	_OSSL2(lang.welcome_font,"WelcomeFontName");
-	_OSSL2(lang.copyright_font, "CopyrightFontName");
-	_OSSLN(lang.dialog_font_size);
-	_OSSLN(lang.title_font_size);
-	_OSSLN(lang.welcome_font_size);
-	_OSSLN(lang.copyright_font_size);
-	_OSSLN(lang.right_to_left);
-	_OSSL(lang.data);
-#	undef _OSSL
-#	undef _OSSLN
-#	undef _OSSL2
-#	undef _OSSLN2
-	outData = oss.str();
-	return outData.size();
-}
-
-CEmbeddedItem CEmbeddedFiles::GenerateLanguageLicense(size_t langIndex) const
-{
-	const auto& lang = _pinfo->languages[langIndex];
-	return CEmbeddedItem(
-		lang.name + ".rtf",
-		lang.license_text.length(),
-		GetMethod(),
-		_time
-	);
-}
-
-size_t CEmbeddedFiles::GenerateLanguageLicenseContent(size_t langIndex, std::string& outData) const
-{
-	const auto& lang = _pinfo->languages[langIndex];
-	outData = lang.license_text;
-	return lang.license_text.length();
-}
-
-CEmbeddedItem CEmbeddedFiles::GenerateWizardImage(size_t imageIndex) const
-{
-	return CEmbeddedItem(
-		"WizardImage" + std::to_string(imageIndex) + ".bmp",
-		_pinfo->wizard_images[imageIndex].size(),
-		GetMethod(),
-		_time
-	);
-}
-
-size_t CEmbeddedFiles::GenerateWizardImageContent(size_t imageIndex, std::string& outData) const
-{
-	outData = _pinfo->wizard_images[imageIndex];
-	return outData.size();
-}
-
-CEmbeddedItem CEmbeddedFiles::GenerateWizardImageSmall(size_t imageIndex) const
-{
-	return CEmbeddedItem(
-		"WizardImageSmall" + std::to_string(imageIndex) + ".bmp",
-		_pinfo->wizard_images_small[imageIndex].size(),
-		GetMethod(),
-		_time
-	);
-}
-
-size_t CEmbeddedFiles::GenerateWizardImageSmallContent(size_t imageIndex, std::string& outData) const
-{
-	outData = _pinfo->wizard_images_small[imageIndex];
-	return outData.size();
-}
-
-const char* CEmbeddedFiles::GetMethod() const
-{
-	switch (_pinfo->header.compression)
-	{
-	case stream::compression_method::Stored:
-		return kMethods[0];
-	case stream::compression_method::Zlib:
-		return kMethods[1];
-	case stream::compression_method::BZip2:
-		return kMethods[2];
-	case stream::compression_method::LZMA1:
-		return kMethods[3];
-	case stream::compression_method::LZMA2:
-		return kMethods[4];
-	case stream::compression_method::UnknownCompression:
-	default:
-		return kMethods[5];
-	}
-}
-
-CInArchiveReadProgressQueryHelper::CInArchiveReadProgressQueryHelper(const CInArchive* archive)
-{
-	_archive = archive;
-}
-
-UInt64 CInArchiveReadProgressQueryHelper::TotalRead() const
-{
-	if (_archive != nullptr)
-		return _archive->_pInteropStream->TotalRead() + _archive->_chunkDecoder.GetPackSize();
-	else
-		return 0;
-}
-
-}
-}
+}}

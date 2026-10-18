@@ -1,145 +1,134 @@
+// InnoInterop.cpp
+
 #include "StdAfx.h"
 
-#include "CPP/7zip/Common/StreamObjects.h"
+#include <string.h>
+
 #include "CPP/7zip/Common/StreamUtils.h"
 
 #include "InnoInterop.h"
-#include "InnoIn.h"
 
 namespace NArchive {
 namespace NInno {
 
-using std::streambuf;
+static const size_t kBufSize = (size_t)1 << 16;
 
-streambuf::pos_type InteropStream::seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode which)
+CInStreamBuf::CInStreamBuf(IInStream *stream):
+    _stream(stream),
+    _buf(kBufSize),
+    _bufPos(0),
+    _error(S_OK)
 {
-	if (std::ios_base::out == which)
-		return pos_type(off_type(-1));
-	UInt64 offset = (UInt64)(-1);
-	HRESULT result = S_FALSE;
-	switch (dir)
-	{
-	case std::ios_base::beg:
-		result = _stream->Seek(off, STREAM_SEEK_SET, &offset);
-		break;
-	case std::ios_base::cur:
-		result = _stream->Seek(off, STREAM_SEEK_CUR, &offset);
-		break;
-	case std::ios_base::end:
-		result = _stream->Seek(off, STREAM_SEEK_END, &offset);
-		break;
-	default:
-		break;
-	}
-	if (S_OK != result)
-	{
-		return pos_type(off_type(-1));
-	}
-	return pos_type(off_type(offset));
+  setg(BufStart(), BufStart(), BufStart());
 }
 
-streambuf::pos_type InteropStream::seekpos(pos_type pos, std::ios_base::openmode which)
+std::streambuf::pos_type CInStreamBuf::SeekTo(UInt64 pos)
 {
-	return seekoff(pos, std::ios_base::beg, which);
+  const UInt64 bufSize = (UInt64)(egptr() - eback());
+  if (pos >= _bufPos && pos - _bufPos <= bufSize)
+    setg(eback(), eback() + (size_t)(pos - _bufPos), egptr());
+  else
+  {
+    // The next read starts at pos.
+    _bufPos = pos;
+    setg(BufStart(), BufStart(), BufStart());
+  }
+  return pos_type(off_type(pos));
 }
 
-std::streamsize InteropStream::showmanyc()
+std::streambuf::pos_type CInStreamBuf::seekoff(off_type off, std::ios_base::seekdir dir,
+    std::ios_base::openmode which)
 {
-	return std::streamsize(0);
+  const pos_type kError = pos_type(off_type(-1));
+  if ((which & std::ios_base::in) == 0)
+    return kError;
+  UInt64 base;
+  switch (dir)
+  {
+    case std::ios_base::beg:
+      base = 0;
+      break;
+    case std::ios_base::cur:
+      base = GetCurPos();
+      break;
+    case std::ios_base::end:
+      if (SetError(_stream->Seek(0, STREAM_SEEK_END, &base)))
+        return kError;
+      break;
+    default:
+      return kError;
+  }
+  const UInt64 kMaxPos = (UInt64)1 << 62;
+  UInt64 pos;
+  if (off < 0)
+  {
+    const UInt64 sub = (UInt64)0 - (UInt64)off;
+    if (sub > base)
+      return kError;
+    pos = base - sub;
+  }
+  else
+  {
+    if (base > kMaxPos || (UInt64)off > kMaxPos - base)
+      return kError;
+    pos = base + (UInt64)off;
+  }
+  return SeekTo(pos);
 }
 
-streambuf::int_type InteropStream::underflow()
+std::streambuf::pos_type CInStreamBuf::seekpos(pos_type pos, std::ios_base::openmode which)
 {
-	char res;
-	UInt32 processedSize;
-	_stream->Read(&res, sizeof(res), &processedSize);
-	if (0 == processedSize)
-	{
-		return traits_type::eof();
-	}
-	_totalRead += processedSize;
-	_stream->Seek(-1, STREAM_SEEK_CUR, NULL);
-	return traits_type::to_int_type(res);
+  return seekoff(off_type(pos), std::ios_base::beg, which);
 }
 
-streambuf::int_type InteropStream::uflow()
+std::streambuf::int_type CInStreamBuf::underflow()
 {
-	char res;
-	UInt32 processedSize;
-	_stream->Read(&res, sizeof(res), &processedSize);
-	if (0 == processedSize)
-	{
-		return traits_type::eof();
-	}
-	_totalRead += processedSize;
-	return traits_type::to_int_type(res);
+  if (gptr() < egptr())
+    return traits_type::to_int_type(*gptr());
+  _bufPos = GetCurPos();
+  setg(BufStart(), BufStart(), BufStart());
+  if (SetError(InStream_SeekSet(_stream, _bufPos)))
+    return traits_type::eof();
+  size_t size = kBufSize;
+  if (SetError(ReadStream(_stream, _buf, &size)) || size == 0)
+    return traits_type::eof();
+  setg(BufStart(), BufStart(), BufStart() + size);
+  return traits_type::to_int_type(*gptr());
 }
 
-std::streamsize InteropStream::xsgetn(char_type* s, std::streamsize count)
+std::streamsize CInStreamBuf::xsgetn(char_type *s, std::streamsize count)
 {
-	if (count <= 0)
-		return 0;
-	size_t processedSize = (size_t)count;
-	// A read error ends the data like the end of the stream.
-	ReadStream(_stream, s, &processedSize);
-	_totalRead += processedSize;
-	return std::streamsize(processedSize);
+  std::streamsize done = 0;
+  while (done < count)
+  {
+    const size_t rem = (size_t)(count - done);
+    const size_t avail = (size_t)(egptr() - gptr());
+    if (avail != 0)
+    {
+      const size_t size = avail < rem ? avail : rem;
+      memcpy(s + done, gptr(), size);
+      gbump((int)size);
+      done += (std::streamsize)size;
+      continue;
+    }
+    if (rem >= kBufSize)
+    {
+      // Large reads bypass the buffer.
+      _bufPos = GetCurPos();
+      setg(BufStart(), BufStart(), BufStart());
+      if (SetError(InStream_SeekSet(_stream, _bufPos)))
+        break;
+      size_t size = rem;
+      if (SetError(ReadStream(_stream, s + done, &size)))
+        break;
+      _bufPos += size;
+      done += (std::streamsize)size;
+      break;
+    }
+    if (traits_type::eq_int_type(underflow(), traits_type::eof()))
+      break;
+  }
+  return done;
 }
 
-InteropStream::InteropStream(IInStream* stream)
-{
-	_stream = stream;
-	_totalRead = 0;
-	setg(nullptr, nullptr, nullptr);
-}
-
-UInt64 InteropStream::TotalRead() const
-{
-	return _totalRead;
-}
-
-InteropStream::~InteropStream()
-{
-	_stream.Release();
-}
-
-InteropFileStreamProgressWriter::InteropFileStreamProgressWriter(CLocalProgress* progress, QueryHelper& archiveHelper, ISequentialOutStream* outStream)
-{
-	_coderSpec = new NCompress::CCopyCoder();
-	_coder = _coderSpec;
-	_progressSpec = progress;
-	_progress = progress;
-	_archive = std::make_shared<QueryHelper>(archiveHelper);
-	_outStream = outStream;
-}
-
-void InteropFileStreamProgressWriter::SetOutStream(ISequentialOutStream* outStream)
-{
-	if (_outStream)
-	{
-		_outStream.Release();
-	}
-	_outStream = outStream;
-}
-
-HRESULT InteropFileStreamProgressWriter::Write(const char* buffer, const size_t size)
-{
-	CBufInStream* bisSpec = new CBufInStream();
-	CMyComPtr<ISequentialInStream> bis = bisSpec;
-	bisSpec->Init((const Byte*)buffer, size);
-	auto result=_coder->Code(bis, _outStream, nullptr, nullptr, _progress);
-	_progressSpec->InSize = _archive->TotalRead();
-	_progressSpec->OutSize += _coderSpec->TotalSize;
-	_progressSpec->SetCur();
-	return result;
-}
-
-InteropFileStreamProgressWriter::~InteropFileStreamProgressWriter()
-{
-	_coder.Release();
-	_progress.Release();
-	_outStream.Release();
-}
-
-}
-}
+}}

@@ -112,9 +112,9 @@ set(INNO_HANDLER_SOURCES
   src/InnoHandler.cpp
   src/InnoIn.cpp
   src/InnoInterop.cpp
-  src/InnoItem.cpp
+  src/InnoPe.cpp
   src/InnoRegister.cpp
-  src/InnoUtils.cpp
+  src/InnoScript.cpp
 )
 
 set(INNO_FORMAT_SOURCES

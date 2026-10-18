@@ -1,5 +1,6 @@
 // Origin: innoextract src/util/log.hpp, commit 83c1544b3f (master, 2021-12-02).
-// Modified for the 7-Zip Inno plugin.
+// Modified for the 7-Zip Inno plugin: messages never go to the console; they
+// are collected per thread (log_capture) or written to an opt-in debug log.
 #include "../minihead.hpp"
 /*
  * Copyright (C) 2011-2019 Daniel Scharrer
@@ -31,26 +32,22 @@
 
 #include <sstream>
 #include <string>
-#include <filesystem>
+#include <vector>
 
-//#include <boost/noncopyable.hpp>
-
-#ifdef _DEBUG
 #define debug(...) \
-	if(::logger::debug) \
+	if(::logger::debug_enabled()) \
 		::logger(::logger::Debug) << __VA_ARGS__
-#else
-#define debug(...)
-#endif
 
-#define log_info \
-	if(!::logger::quiet) \
-		::logger(::logger::Info)
+#define log_info    ::logger(::logger::Info)
 #define log_warning ::logger(::logger::Warning)
 #define log_error   ::logger(::logger::Error)
 
 /*!
- * logger class that allows longging via the stream operator.
+ * logger class that allows logging via the stream operator.
+ *
+ * Nothing is ever written to the console. A finished message goes to the innermost
+ * \ref log_capture of the current thread. Without a capture, it is appended to the
+ * debug log file named by the INNO_PLUGIN_LOG environment variable, if that is set.
  */
 class logger : private boost::noncopyable {
 	
@@ -70,12 +67,6 @@ private:
 	std::ostringstream buffer; //! Buffer for the log message excluding level, file and line.
 	
 public:
-	static std::optional<std::filesystem::path> log_path;
-	static size_t total_warnings; //! Total number of \ref log_warning uses so far.
-	static size_t total_errors;   //! Total number of \ref log_error uses so far.
-	
-	static bool debug; //! Is \ref debug output enabled?
-	static bool quiet; //! Is \ref log_info disabled?
 	
 	/*!
 	 * Construct a log line output stream.
@@ -93,60 +84,65 @@ public:
 	
 	~logger();
 	
-};
-
-class warning_storage {
+	//! Is the opt-in debug log (INNO_PLUGIN_LOG) enabled?
+	static bool debug_enabled();
 	
-protected:
-	
-	
-public:
+	//! Pass a finished message to the current capture or to the debug log.
+	static void emit(log_level level, const std::string & message);
 	
 };
 
-class warning_suppressor : public warning_storage {
-	
-	std::ostringstream buffer;
-	std::streambuf * streambuf;
-	size_t warnings;
-	size_t errors;
-	
-	static std::streambuf * set_streambuf(std::streambuf * streambuf);
+/*!
+ * Collects the messages logged by the current thread while it is installed.
+ *
+ * Captures nest: the constructor installs the capture, \ref restore() and
+ * \ref flush() uninstall it again.
+ */
+class log_capture : private boost::noncopyable {
 	
 public:
 	
-	warning_suppressor()
-		: streambuf(set_streambuf(buffer.rdbuf()))
-		, warnings(logger::total_warnings)
-		, errors(logger::total_errors)
-	{ }
+	struct message {
+		logger::log_level level;
+		std::string text;
+	};
 	
-	~warning_suppressor() {
+private:
+	
+	log_capture * previous;
+	bool installed;
+	std::vector<message> messages;
+	
+	friend class logger;
+	
+public:
+	
+	log_capture();
+	
+	~log_capture() {
 		restore();
 	}
 	
-	void restore() {
-		
-		if(!streambuf) {
-			return;
-		}
-		
-		set_streambuf(streambuf);
-		streambuf = NULL;
-		
-		size_t new_warnings = logger::total_warnings - warnings;
-		size_t new_errors = logger::total_errors - errors;
-		logger::total_warnings = warnings;
-		logger::total_errors = errors;
-		warnings = new_warnings;
-		errors = new_errors;
-		
-	}
+	//! Stop capturing messages; captured messages are kept but not passed on.
+	void restore();
 	
+	//! Stop capturing and pass the captured messages to the enclosing capture or the debug log.
 	void flush();
 	
-	operator bool() {
-		return buffer.tellp() != std::ostringstream::pos_type(0);
+	//! Were any warnings or errors captured?
+	bool has_problems() const;
+	
+	const std::vector<message> & get() const { return messages; }
+	
+};
+
+//! Captures warnings while trying to parse the headers with a candidate version.
+class warning_suppressor : public log_capture {
+	
+public:
+	
+	operator bool() const {
+		return has_problems();
 	}
 	
 };
