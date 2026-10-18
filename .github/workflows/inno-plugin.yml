@@ -12,6 +12,11 @@ name: Inno plugin
 #            official 7-Zip 26.04 (x64 and x86) on the whole corpus
 on:
   workflow_dispatch:
+    inputs:
+      fresh-corpus:
+        description: Compile the whole corpus instead of starting from the cache
+        type: boolean
+        default: false
   push:
     paths:
       - InnoPlugin/**
@@ -47,12 +52,20 @@ jobs:
 
       # The runner compiles only the installers whose scripts or payload changed
       # (corpus_key in run_tests.py), so an older corpus is a good start.
+      - name: Cache key of the corpus
+        id: key
+        run: >
+          echo "key=corpus-${{ hashFiles('InnoPlugin/tests/corpus/**', 'InnoPlugin/tests/make_payload.py',
+          'InnoPlugin/tests/run_tests.py', 'InnoPlugin/tests/iscrypt/**', '.github/scripts/setup-inno-tools.sh') }}"
+          >> "$GITHUB_OUTPUT"
+
       - name: Restore the corpus cache
         id: cache
+        if: ${{ !inputs.fresh-corpus }}
         uses: actions/cache/restore@v6
         with:
           path: InnoPlugin/build/corpus
-          key: corpus-${{ hashFiles('InnoPlugin/tests/corpus/**', 'InnoPlugin/tests/make_payload.py', 'InnoPlugin/tests/run_tests.py', 'InnoPlugin/tests/iscrypt/**', '.github/scripts/setup-inno-tools.sh') }}
+          key: ${{ steps.key.outputs.key }}
           restore-keys: corpus-
 
       - name: Install packages (Wine, MinGW)
@@ -65,14 +78,20 @@ jobs:
 
       - name: Compile the missing or outdated installers
         if: steps.cache.outputs.cache-hit != 'true'
-        run: python3 InnoPlugin/tests/run_tests.py --compile-only
+        run: |
+          # One Wine server and set of Wine services for all compiler runs (see
+          # the wine job).
+          wineserver -w
+          wineserver -p
+          wine cmd /c exit > /dev/null 2>&1
+          python3 InnoPlugin/tests/run_tests.py --compile-only
 
       - name: Save the corpus cache
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: InnoPlugin/build/corpus
-          key: ${{ steps.cache.outputs.cache-primary-key }}
+          key: ${{ steps.key.outputs.key }}
 
       - name: Upload the test corpus (payload and installers)
         uses: actions/upload-artifact@v7
@@ -218,11 +237,15 @@ jobs:
           echo "$SEVENZIP_X86_SHA256  InnoPlugin/build/7z2604.exe" | sha256sum -c -
           7zz x -y -oInnoPlugin/build/7zip-x86 InnoPlugin/build/7z2604.exe > /dev/null
 
-      # One Wine server for all 7-Zip runs, instead of one per run.
+      # One Wine server and one set of Wine services for all 7-Zip runs, instead
+      # of starting and stopping them for every run (most of the time of a run).
+      # The first program starts the services, which keep its output open: run
+      # it with the output going to /dev/null, so that no test waits for it.
       - name: Start a persistent Wine server
         run: |
           wineserver -w
           wineserver -p
+          7z-win i > /dev/null 2>&1
 
       - name: Tests (7-Zip under Wine)
         run: |
