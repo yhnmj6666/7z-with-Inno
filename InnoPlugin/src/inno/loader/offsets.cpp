@@ -245,7 +245,8 @@ void offsets::load(std::istream & is) {
 	 * In that case, the setup headers start at the beginning of the file.
 	 */
 	
-	exe_compressed_size = exe_uncompressed_size = exe_offset = 0; // No embedded setup exe.
+	exe_compressed_size = exe_uncompressed_size = 0; // No embedded setup exe.
+	exe_offset = 0;
 	
 	message_offset = 0; // No embedded messages.
 	

@@ -23,8 +23,12 @@ The runner:
 
 1. Writes the payload to `build/corpus/payload/` and compiles every variant
    script in `corpus/` (all but `common.iss` and `timestamps.iss`, listed in
-   `VARIANTS` in `run_tests.py`) with every compiler (`iscc-5.6.1` (ANSI),
-   `iscc-5.6.1-unicode`, `iscc-6.0.5`, `iscc-6.1.2`, `iscc-6.2.2`), with
+   `VARIANTS` in `run_tests.py`) with every compiler (`COMPILERS`:
+   `iscc-5.6.1` (ANSI), `iscc-5.6.1-unicode`, `iscc-6.0.5` to `iscc-6.7.3`,
+   `iscc-7.0.2-x64`, `iscc-7.1.0-x64` and `iscc-7.1.0-x86`), and the
+   encrypted variants (`ENCRYPTED_VARIANTS`: `encrypted.iss` with
+   `Encryption=yes`, `encrypted-full.iss` with `Encryption=full` from 6.5,
+   password `inno-test-password`), with
    `TZ=UTC`, into `build/corpus/installers/<compiler>/<variant>.exe`. Each
    installer has a `.key` file with a hash of the compiler name, the scripts
    and `make_payload.py`; an installer is compiled again only when its key
@@ -56,6 +60,19 @@ The runner:
    damaged part of the chunk, and the files that are not affected still
    match. `payload/bin/calls.exe` (a PE file that is no installer) cannot be
    opened.
+
+   Then the encrypted installers: with the right password, `l` lists the
+   expected items (the files with data are encrypted, the archive method
+   names `ARC4` or `XChaCha20`) and `t` passes. With a wrong password, every
+   file with data reports `wrong_password` and the others are `ok`; for
+   `Encryption=full`, `l` lists no items and reports the
+   `EncryptedHeadersError` flag. Without a password the client's callback
+   cancels (`E_ABORT`). A copy of the newest installer whose setup data
+   version is changed to `9.9.9.9` opens without items and with the error
+   "Unsupported Inno Setup version". Before 6.4, `Encryption=yes` needs
+   `ISCrypt.dll` in the compiler folder; `.github/scripts/setup-inno-tools.sh`
+   builds a stand-in from `iscrypt/iscrypt.c`, and without it these
+   installers are skipped.
 4. Windows 7-Zip, when a 7-Zip folder and a plugin DLL are given or found
    (default: `/opt/inno-tools/7zip-win64` and
    `build/mingw-x86_64/Inno.64.dll`): the runner copies `7z.exe`, `7z.dll`

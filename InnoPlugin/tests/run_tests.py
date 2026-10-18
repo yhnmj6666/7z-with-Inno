@@ -307,7 +307,11 @@ def build_corpus(args, results, encrypted=False):
                 installers[(compiler, variant)] = exe
                 continue
             if args.no_compile:
-                results.report("FAIL", name, "installer missing or built from other scripts (--no-compile)")
+                if encrypted and compiler_version(compiler) < (6, 4, 0):
+                    # Compiled only where ISCrypt.dll was available (see missing_iscrypt).
+                    results.report("SKIP", name, "not in the prebuilt corpus (ARC4 needs ISCrypt.dll)")
+                else:
+                    results.report("FAIL", name, "installer missing or built from other scripts (--no-compile)")
                 continue
             if missing_iscrypt(compiler, variant):
                 results.report("SKIP", name, missing_iscrypt(compiler, variant))

@@ -87,6 +87,21 @@ physical size, headers size, and a comment with the Inno Setup version, the
 application name and version. Warnings from the setup header parser are shown
 as archive warnings.
 
+Encrypted installers (`Encryption=yes`, and `Encryption=full` from Inno
+Setup 6.5) ask for the password through 7-Zip's password prompt or `-p`:
+`Encryption=full` when the installer is opened (its setup headers are
+encrypted too), otherwise when the first encrypted file is extracted. The
+password is checked against the installer's password test before anything
+is decrypted; a wrong one gives "Wrong password" for each encrypted file, or
+for `Encryption=full` an empty archive with the error "Headers Error in
+encrypted archive. Wrong password?". Inno Setup before 6.4 encrypts with
+ARCFOUR (the archive method shows `ARC4`), 6.4 and later with XChaCha20 and
+a PBKDF2-SHA256 key (`XChaCha20`).
+
+Installers with a setup data version newer than the plugin knows open as an
+empty archive with the error "Unsupported Inno Setup version: <version>"
+instead of being declined, so 7-Zip does not show them as a plain `PE` file.
+
 7-Zip recognizes installers by their content, so renamed installers (for
 example `setup.bin`) open too, and `-tInno` forces the format. Executables
 that are not Inno Setup installers, including damaged installers whose setup
@@ -138,23 +153,29 @@ Ubuntu (GCC, MinGW, Wine) and Windows (MSVC, official 7-Zip 26.04 x64 and x86).
 
 ## Supported Inno Setup versions
 
-The format code comes from innoextract (commit `83c1544b3f`, December 2021).
+The format code comes from innoextract (commit `6e9e34ed08`, February 2025,
+for Inno Setup up to 6.4.0.1), extended for the setup data versions of Inno
+Setup 6.4.1 to 7.1.0 (the newest is `7.0.0.3`) from the Inno Setup sources.
 Tested so far:
 
 | Inno Setup | Tested with |
 |---|---|
-| 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2 | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`; timestamps in UTC and local time), every CI run |
+| 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2, 6.3.3, 6.4.3, 6.5.4, 6.6.1, 6.7.3, 7.0.2 (x64), 7.1.0 (x64 and x86) | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`; timestamps in UTC and local time; `Encryption=yes`, and `Encryption=full` from 6.5, with the right, a wrong and no password), every CI run |
 | 5.0.4 to 6.2.0 | 15 real installers, checked by the owner with the MSVC and MinGW builds: every file has the same content as with the old plugin, and `7z t` passes |
 
-Encrypted or disk-spanning installers and Inno Setup 6.3 or later are not
-supported yet.
+The encrypted corpus installers of Inno Setup before 6.4 are compiled with a
+stand-in for `ISCrypt.dll` (`tests/iscrypt/iscrypt.c`, standard ARCFOUR).
+Disk-spanning installers are not supported yet.
 
 ## Known limitations
 
-- No passwords: encrypted files are reported as "Unsupported Method" (Phase
-  5). Disk-spanning installers open, but their files are reported as
-  "Unavailable" (Phase 6). Inno Setup 6.3 or later is not supported yet
-  (Phase 5).
+- Disk-spanning installers open, but their files are reported as
+  "Unavailable" (Phase 6).
+- The dark and back wizard images of Inno Setup 6.6 and later are read but
+  not listed; wizard images are always named `.bmp`, also when they are PNG
+  files (6.6 and later).
+- Files that Setup downloads (`[Files]` flag `download`, Inno Setup 6.5 and
+  later) have no data in the installer and are not listed.
 - Timestamps stored in local time are converted with the current time zone
   offset of the computer that runs 7-Zip, not the offset of the build
   computer or of the file's date, as Setup does.
