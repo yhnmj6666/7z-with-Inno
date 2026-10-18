@@ -6,6 +6,7 @@
 #include "CPP/Common/MyCom.h"
 #include "CPP/Common/MyString.h"
 #include "CPP/7zip/IStream.h"
+#include "CPP/7zip/Archive/IArchive.h"
 
 #include "inno/loader/offsets.hpp"
 #include "inno/setup/data.hpp"
@@ -42,6 +43,7 @@ class CInArchive
   void BuildExtraFiles();
   void BuildItems();
   void ComputeSizes(const Byte *peHeaders, size_t peHeadersSize);
+  void SetError(UInt32 flags, const std::string &message);
 
 public:
   CMyComPtr<IInStream> Stream;
@@ -56,13 +58,28 @@ public:
   bool IsSolid;
   AString Method;
   UString Comment;
+  // An installer that cannot be listed (unsupported version, encrypted
+  // headers without the right password) opens without items and reports
+  // the error through kpidErrorFlags and kpidError.
+  UInt32 ErrorFlags;
+  std::string ErrorMessage;
+  // Checked key of the password (setup::info::get_key).
+  std::string Key;
+  bool KeyDefined;
 
-  CInArchive(): FileSize(0), PhySize(0), IsSolid(false) {}
+  CInArchive(): FileSize(0), PhySize(0), IsSolid(false), ErrorFlags(0), KeyDefined(false) {}
 
   // Returns S_FALSE if the stream is not an Inno Setup installer that can be
-  // opened, or the error of the stream if reading it failed.
-  HRESULT Open(IInStream *stream);
+  // opened, or the error of the stream or the callback if reading it or
+  // getting the password failed.
+  HRESULT Open(IInStream *stream, IArchiveOpenCallback *callback);
   void Clear();
+
+  // Gets the password from the ICryptoGetTextPassword interface of callback
+  // and sets Key if it is right. Returns the error of the callback.
+  HRESULT GetPassword(IUnknown *callback);
+  // Sets Key if password is the password of the installer.
+  bool SetPassword(const UString &password);
 
   const setup::data_entry &GetDataEntry(const CItem &item) const
     { return Info.data_entries[Info.files[(size_t)item.FileIndex].location]; }

@@ -73,7 +73,7 @@ Z7_COM7F_IMF(CHandler::Open(IInStream *stream, const UInt64 * /* maxCheckStartPo
         }
       }
     }
-    const HRESULT res = _arc.Open(stream);
+    const HRESULT res = _arc.Open(stream, callback);
     if (res != S_OK)
       Close();
     return res;
@@ -218,6 +218,18 @@ Z7_COM7F_IMF(CHandler::GetArchiveProperty(PROPID propID, PROPVARIANT *value))
         if (!_arc.Comment.IsEmpty())
           prop = _arc.Comment;
         break;
+      case kpidErrorFlags:
+        if (_arc.ErrorFlags != 0)
+          prop = _arc.ErrorFlags;
+        break;
+      case kpidError:
+        if (!_arc.ErrorMessage.empty())
+        {
+          UString u;
+          Utf8ToUnicode(_arc.ErrorMessage, u);
+          prop = u;
+        }
+        break;
       case kpidWarning:
       {
         if (_arc.Warnings.empty())
@@ -337,8 +349,6 @@ public:
       return -1;
     if (_arc.Offsets.data_offset == 0)
       return NExtract::NOperationResult::kUnavailable;
-    if (entry.chunk.encryption != stream::Plaintext)
-      return NExtract::NOperationResult::kUnsupportedMethod;
     if (entry.chunk.compression == stream::UnknownCompression)
       return NExtract::NOperationResult::kUnsupportedMethod;
     return -1;
@@ -364,7 +374,7 @@ HRESULT CExtractor::Decode(const setup::data_entry &entry, ISequentialOutStream 
     }
     if (!Decoder.IsOpen(chunk) || Decoder.GetPos() > file.offset)
     {
-      const HRESULT res = Decoder.Open(_arc.Stream, _arc.Offsets.data_offset, chunk, std::string());
+      const HRESULT res = Decoder.Open(_arc.Stream, _arc.Offsets.data_offset, chunk, _arc.Key);
       if (res != S_OK)
       {
         Decoder.Close();
@@ -532,13 +542,26 @@ HRESULT CHandler::Extract2(const UInt32 *indices, UInt32 numItems, bool testMode
       NExtract::NAskMode::kTest :
       NExtract::NAskMode::kExtract;
 
+  // The password is requested once, for the first encrypted file.
+  bool passwordRequested = false;
   for (size_t i = 0; i < files.size();)
   {
     size_t end = i + 1;
     while (end < files.size() && files[end].Location == files[i].Location)
       end++;
     const setup::data_entry &entry = entries[files[i].Location];
-    const Int32 staticRes = extractor.GetStaticResult(entry);
+    Int32 staticRes = extractor.GetStaticResult(entry);
+    if (staticRes < 0 && entry.file.size != 0 && entry.chunk.encryption != stream::Plaintext
+        && !_arc.KeyDefined)
+    {
+      if (!passwordRequested)
+      {
+        passwordRequested = true;
+        RINOK(_arc.GetPassword(extractCallback))
+      }
+      if (!_arc.KeyDefined)
+        staticRes = NExtract::NOperationResult::kWrongPassword;
+    }
     bool haveResult = false;
     bool cacheValid = false;
     Int32 result = NExtract::NOperationResult::kOK;

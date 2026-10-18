@@ -15,6 +15,7 @@
 #include "CPP/7zip/Common/LimitedStreams.h"
 
 #include "inno/crypto/arc4.hpp"
+#include "inno/crypto/xchacha20.hpp"
 #include "inno/stream/chunk.hpp"
 
 #include <string>
@@ -58,6 +59,18 @@ public:
   CArc4InStream(ISequentialInStream *stream, const char *key, size_t keySize);
 };
 
+// XChaCha20 decryption (Inno Setup 6.4+) of the data read from the underlying
+// stream. key is the derived key followed by the base nonce.
+Z7_CLASS_IMP_NOQIB_1(
+  CXChaCha20InStream
+  , ISequentialInStream
+)
+  CMyComPtr<ISequentialInStream> _stream;
+  crypto::xchacha20 _cipher;
+public:
+  CXChaCha20InStream(ISequentialInStream *stream, const std::string &key, const stream::chunk &chunk);
+};
+
 // Decompressed data of one chunk, read sequentially. Files are located by
 // their offset in the decompressed data: going forward skips data, going
 // backwards reopens the chunk.
@@ -82,11 +95,12 @@ public:
     { return _packSizeClosed + (_limitedSpec ? _limitedSpec->GetSize() : 0); }
   void Close();
 
-  // Opens the chunk stored at dataOffset + chunk.offset in stream.
+  // Opens the chunk stored at dataOffset + chunk.offset in stream. key is
+  // the key of encrypted chunks (setup::info::get_key).
   // Returns S_FALSE if the chunk is damaged, E_NOTIMPL if its compression
-  // method is not supported.
+  // or encryption method is not supported.
   HRESULT Open(IInStream *stream, UInt64 dataOffset, const stream::chunk &chunk,
-      const std::string &password);
+      const std::string &key);
 
   // Reads up to size bytes; fewer only at the end of the data. Returns
   // S_FALSE on a data error. The decoder is closed after any error.

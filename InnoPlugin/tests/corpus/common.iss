@@ -15,6 +15,10 @@ DefaultDirName={sd}\InnoPluginTest
 DisableProgramGroupPage=yes
 Compression={#Compression}
 SolidCompression={#Solid}
+#ifdef Password
+Password={#Password}
+Encryption={#Encryption}
+#endif
 
 [Types]
 Name: "full"; Description: "Full installation"; Flags: iscustom

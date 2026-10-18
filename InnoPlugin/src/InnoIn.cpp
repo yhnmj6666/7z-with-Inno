@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "CPP/Common/UTFConvert.h"
+#include "CPP/7zip/IPassword.h"
 #include "CPP/7zip/Archive/IArchive.h"
 #include "CPP/7zip/Common/StreamUtils.h"
 
@@ -103,6 +104,55 @@ void CInArchive::Clear()
   IsSolid = false;
   Method.Empty();
   Comment.Empty();
+  ErrorFlags = 0;
+  ErrorMessage.clear();
+  Key.clear();
+  KeyDefined = false;
+}
+
+void CInArchive::SetError(UInt32 flags, const std::string &message)
+{
+  ErrorFlags |= flags;
+  if (!message.empty())
+    ErrorMessage = message;
+}
+
+bool CInArchive::SetPassword(const UString &password)
+{
+  AString utf8;
+  ConvertUnicodeToUTF8(password, utf8);
+  std::string key;
+  try
+  {
+    key = Info.get_key(std::string(utf8.Ptr(), utf8.Len()));
+    if (!Info.check_key(key))
+      return false;
+  }
+  catch (const std::bad_alloc &)
+  {
+    throw;
+  }
+  catch (...)
+  {
+    return false;
+  }
+  Key = key;
+  KeyDefined = true;
+  return true;
+}
+
+HRESULT CInArchive::GetPassword(IUnknown *callback)
+{
+  if (!callback)
+    return S_OK;
+  CMyComPtr<ICryptoGetTextPassword> getTextPassword;
+  callback->QueryInterface(IID_ICryptoGetTextPassword, (void **)&getTextPassword);
+  if (!getTextPassword)
+    return S_OK;
+  CMyComBSTR password;
+  RINOK(getTextPassword->CryptoGetTextPassword(&password))
+  SetPassword(UString((const wchar_t *)password ? (const wchar_t *)password : L""));
+  return S_OK;
 }
 
 UInt64 CInArchive::GetChunkEnd(const stream::chunk &chunk) const
@@ -590,7 +640,7 @@ void CInArchive::ComputeSizes(const Byte *peHeaders, size_t peHeadersSize)
   PhySize = phySize;
 }
 
-HRESULT CInArchive::Open(IInStream *stream)
+HRESULT CInArchive::Open(IInStream *stream, IArchiveOpenCallback *callback)
 {
   Clear();
   RINOK(InStream_GetSize_SeekToEnd(stream, FileSize))
@@ -604,6 +654,7 @@ HRESULT CInArchive::Open(IInStream *stream)
     return S_FALSE;
 
   bool ok = false;
+  HRESULT callbackRes = S_OK;
   CInStreamBuf streamBuf(stream);
   log_capture capture;
   try
@@ -613,9 +664,29 @@ HRESULT CInArchive::Open(IInStream *stream)
     if (Offsets.found_magic)
     {
       is.clear();
-      is.seekg(Offsets.header_offset);
-      Info.load(is, setup::info::entry_types::all());
-      ok = true;
+      is.seekg((std::streamoff)Offsets.header_offset);
+      Info.load_version(is);
+      if (Info.version.is_newer_than_known())
+      {
+        std::ostringstream oss;
+        oss << "Unsupported Inno Setup version: " << Info.version;
+        SetError(kpv_ErrorFlags_UnsupportedFeature, oss.str());
+      }
+      else if (Info.encryption == setup::info::EncryptionFull)
+      {
+        // The setup headers are encrypted (Encryption=full, 6.5+).
+        callbackRes = GetPassword(callback);
+        if (callbackRes == S_OK)
+        {
+          if (KeyDefined)
+            Info.load_headers(is, setup::info::entry_types::all(), 0, Key);
+          else
+            SetError(kpv_ErrorFlags_EncryptedHeadersError, std::string());
+        }
+      }
+      else
+        Info.load_headers(is, setup::info::entry_types::all());
+      ok = (callbackRes == S_OK);
     }
     else
       debug("no setup loader found");
@@ -648,14 +719,19 @@ HRESULT CInArchive::Open(IInStream *stream)
   if (!ok)
   {
     Clear();
+    if (callbackRes != S_OK)
+      return callbackRes;
     // A read error or E_ABORT from the stream ends the data while parsing.
     const HRESULT res = streamBuf.GetError();
     return res != S_OK ? res : S_FALSE;
   }
 
   Stream = stream;
-  BuildExtraFiles();
-  BuildItems();
+  if (ErrorFlags == 0)
+  {
+    BuildExtraFiles();
+    BuildItems();
+  }
   ComputeSizes(peHeaders, peSize);
 
   std::ostringstream comment;
