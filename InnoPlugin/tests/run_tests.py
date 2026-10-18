@@ -69,7 +69,9 @@ TIMEOUT = 600
 INCORRECT_CHARS = re.compile(r'[\x00-\x1f:*?<>|"]')
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 # Extra items whose number depends on the compiler (wizard images).
-OPTIONAL_EXTRA = re.compile(r"embedded\\WizardImage(Small)?\d+\.bmp$")
+OPTIONAL_EXTRA = re.compile(r"embedded\\WizardImage(Small|Back)?(Dark)?\d+\.(bmp|png)$")
+# The wizard images are named by their content.
+IMAGE_MAGIC = {"bmp": b"BM", "png": b"\x89PNG\r\n\x1a\n"}
 # Inno Setup [Files] parameters: Name: "value" or Name: value.
 PARAMETER = re.compile(r'(\w+)\s*:\s*(?:"([^"]*)"|([^;]*))')
 # The client's item results for damaged data.
@@ -495,6 +497,8 @@ def compare_folder(out_dir, items, sources, payload, unchecked=()):
                                 % (path, sources[path], len(data), len(payload[sources[path]])))
         elif len(data) != items[path]:
             problems.append("%s: size %d, listed %s" % (path, len(data), items[path]))
+        elif OPTIONAL_EXTRA.search(path) and not data.startswith(IMAGE_MAGIC[path.rsplit(".", 1)[1]]):
+            problems.append("%s: content is not a %s image" % (path, path.rsplit(".", 1)[1]))
     for comps in sorted(found - set(expected) - tolerated):
         problems.append("unexpected file %s" % "\\".join(comps))
     return problems

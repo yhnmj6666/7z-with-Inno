@@ -72,7 +72,8 @@ that the installer keeps in its setup headers:
 | `embedded\License.txt` or `.rtf` | the license text (`LicenseFile`) |
 | `embedded\<language>.isl` | the messages of each language |
 | `embedded\<language>.txt` or `.rtf` | the license of each language |
-| `embedded\WizardImage<N>.bmp`, `embedded\WizardImageSmall<N>.bmp` | the wizard images |
+| `embedded\WizardImage<N>.bmp`, `embedded\WizardImageSmall<N>.bmp` | the wizard images (`WizardImageFile`, `WizardSmallImageFile`), named `.png` for PNG images (Inno Setup 6.6 and later) |
+| `embedded\WizardImageBack<N>`, `embedded\WizardImageDark<N>`, `embedded\WizardImageSmallDark<N>`, `embedded\WizardImageBackDark<N>` | the background images (`WizardBackImageFile`, 6.7 and later) and the images for dark mode (`...DynamicDark`, 6.6 and later), with `.bmp` or `.png` as above |
 
 Modification times are the times Setup gives the installed files. Installers
 built with `TimeStampsInUTC=yes` (the default from Inno Setup 7) store UTC.

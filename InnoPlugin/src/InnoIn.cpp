@@ -196,6 +196,16 @@ static const char *GetTextExtension(const std::string &text)
   return (text.compare(0, 5, "{\\rtf") == 0) ? ".rtf" : ".txt";
 }
 
+// Inno Setup 6.6 and later also store PNG images.
+static const char *GetImageExtension(const std::string &image)
+{
+  if (image.compare(0, 8, "\x89PNG\r\n\x1a\n") == 0)
+    return ".png";
+  if (image.compare(0, 2, "BM") == 0)
+    return ".bmp";
+  return ".bin";
+}
+
 void CInArchive::BuildExtraFiles()
 {
   AddExtraFile("install_script.iss", NULL);
@@ -214,17 +224,28 @@ void CInArchive::BuildExtraFiles()
     if (!lang.license_text.empty())
       AddExtraFile(lang.name + GetTextExtension(lang.license_text), &lang.license_text);
   }
-  for (size_t i = 0; i < Info.wizard_images.size(); i++)
+  const struct
   {
-    std::ostringstream name;
-    name << "WizardImage" << i << ".bmp";
-    AddExtraFile(name.str(), &Info.wizard_images[i]);
-  }
-  for (size_t i = 0; i < Info.wizard_images_small.size(); i++)
+    const char *Name;
+    const std::vector<std::string> *Images;
+  } imageSets[] =
   {
-    std::ostringstream name;
-    name << "WizardImageSmall" << i << ".bmp";
-    AddExtraFile(name.str(), &Info.wizard_images_small[i]);
+    { "WizardImage", &Info.wizard_images },
+    { "WizardImageSmall", &Info.wizard_images_small },
+    { "WizardImageBack", &Info.wizard_images_back },
+    { "WizardImageDark", &Info.wizard_images_dark },
+    { "WizardImageSmallDark", &Info.wizard_images_small_dark },
+    { "WizardImageBackDark", &Info.wizard_images_back_dark }
+  };
+  for (size_t k = 0; k < Z7_ARRAY_SIZE(imageSets); k++)
+  {
+    const std::vector<std::string> &images = *imageSets[k].Images;
+    for (size_t i = 0; i < images.size(); i++)
+    {
+      std::ostringstream name;
+      name << imageSets[k].Name << i << GetImageExtension(images[i]);
+      AddExtraFile(name.str(), &images[i]);
+    }
   }
 }
 
