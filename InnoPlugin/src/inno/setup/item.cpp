@@ -60,4 +60,15 @@ void item::load_condition_data(std::istream & is, const info & i) {
 	
 }
 
+unsigned item::load_bitness(std::istream & is) {
+	
+	// TSetupEntryBitness: InstallDefault, 32Bit, 64Bit, NativeBit, CurrentProcessBit
+	switch(util::load<boost::uint8_t>(is)) {
+		case 1: return 32;
+		case 2: return 64;
+		default: return 0;
+	}
+	
+}
+
 } // namespace setup

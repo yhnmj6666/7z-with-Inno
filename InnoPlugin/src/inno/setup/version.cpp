@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/version.cpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/version.cpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 /*
  * Copyright (C) 2011-2020 Daniel Scharrer
@@ -185,6 +185,18 @@ const known_version versions[] = {
 	{ "Inno Setup Setup Data (5.6.2) (u)", /* prerelease */ INNO_VERSION_EXT(5, 6,  2, 0), version::Unicode },
 	{ "Inno Setup Setup Data (6.0.0) (u)",                  INNO_VERSION_EXT(6, 0,  0, 0), version::Unicode },
 	{ "Inno Setup Setup Data (6.1.0) (u)",                  INNO_VERSION_EXT(6, 1,  0, 0), version::Unicode },
+	{ "Inno Setup Setup Data (6.3.0)",                      INNO_VERSION_EXT(6, 3,  0, 0), version::Unicode },
+	{ "Inno Setup Setup Data (6.4.0)",     /* prerelease */ INNO_VERSION_EXT(6, 4,  0, 0), version::Unicode },
+	{ "Inno Setup Setup Data (6.4.0.1)",  /* 6.4.0-6.4.1 */ INNO_VERSION_EXT(6, 4,  0, 1), version::Unicode },
+	{ "Inno Setup Setup Data (6.4.2)",                      INNO_VERSION_EXT(6, 4,  2, 0), version::Unicode },
+	{ "Inno Setup Setup Data (6.4.3)",                      INNO_VERSION_EXT(6, 4,  3, 0), version::Unicode },
+	{ "Inno Setup Setup Data (6.5.0)",    /* 6.5.0-6.5.1 */ INNO_VERSION_EXT(6, 5,  0, 0), version::Unicode },
+	{ "Inno Setup Setup Data (6.5.2)",    /* 6.5.2-6.5.4 */ INNO_VERSION_EXT(6, 5,  2, 0), version::Unicode },
+	{ "Inno Setup Setup Data (6.6.0)",                      INNO_VERSION_EXT(6, 6,  0, 0), version::Unicode },
+	{ "Inno Setup Setup Data (6.6.1)",                      INNO_VERSION_EXT(6, 6,  1, 0), version::Unicode },
+	{ "Inno Setup Setup Data (6.7.0)",    /* 6.7.0-6.7.3 */ INNO_VERSION_EXT(6, 7,  0, 0), version::Unicode },
+	{ "Inno Setup Setup Data (7.0.0.1)",   /* prerelease */ INNO_VERSION_EXT(7, 0,  0, 1), version::Unicode },
+	{ "Inno Setup Setup Data (7.0.0.3)",  /* 7.0.0-7.1.0 */ INNO_VERSION_EXT(7, 0,  0, 3), version::Unicode },
 };
 
 } // anonymous namespace
@@ -347,7 +359,8 @@ void version::load(std::istream & is) {
 	}
 	
 	variant = 0;
-	if(boost::contains(version_str, "(u)") || boost::contains(version_str, "(U)")) {
+	if(value >= INNO_VERSION(6, 3, 0) ||
+	   boost::contains(version_str, "(u)") || boost::contains(version_str, "(U)")) {
 		variant |= Unicode;
 	}
 	if(boost::contains(version_str, "My Inno Setup Extensions") || boost::contains(version_str, "with ISX")) {
@@ -400,6 +413,20 @@ bool version::is_ambiguous() const {
 	}
 	
 	return false;
+}
+
+bool version::is_newer_than_known() const {
+	
+	if(known) {
+		return false;
+	}
+	
+	version_constant newest = 0;
+	for(size_t i = 0; i < size_t(boost::size(versions)); i++) {
+		newest = std::max(newest, versions[i].version);
+	}
+	
+	return value > newest;
 }
 
 version_constant version::next() {

@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/data.cpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/data.cpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 /*
  * Copyright (C) 2011-2019 Daniel Scharrer
@@ -34,6 +34,17 @@
 
 namespace setup {
 
+namespace {
+
+STORED_ENUM_MAP(stored_sign_mode, data_entry::NoSetting,
+	data_entry::NoSetting,
+	data_entry::Yes,
+	data_entry::Once,
+	data_entry::Check,
+);
+
+} // anonymous namespace
+
 void data_entry::load(std::istream & is, const info & i) {
 	
 	chunk.first_slice = util::load<boost::uint32_t>(is, i.version.bits());
@@ -47,7 +58,11 @@ void data_entry::load(std::istream & is, const info & i) {
 		}
 	}
 	
-	chunk.sort_offset = chunk.offset = util::load<boost::uint32_t>(is);
+	if(i.version >= INNO_VERSION(6, 5, 2)) {
+		chunk.sort_offset = chunk.offset = util::load<boost::uint64_t>(is);
+	} else {
+		chunk.sort_offset = chunk.offset = util::load<boost::uint32_t>(is);
+	}
 	
 	if(i.version >= INNO_VERSION(4, 0, 1)) {
 		file.offset = util::load<boost::uint64_t>(is);
@@ -64,7 +79,10 @@ void data_entry::load(std::istream & is, const info & i) {
 	}
 	uncompressed_size = file.size;
 	
-	if(i.version >= INNO_VERSION(5, 3, 9)) {
+	if(i.version >= INNO_VERSION(6, 4, 0)) {
+		is.read(file.checksum.sha256, std::streamsize(sizeof(file.checksum.sha256)));
+		file.checksum.type = crypto::SHA256;
+	} else if(i.version >= INNO_VERSION(5, 3, 9)) {
 		is.read(file.checksum.sha1, std::streamsize(sizeof(file.checksum.sha1)));
 		file.checksum.type = crypto::SHA1;
 	} else if(i.version >= INNO_VERSION(4, 2, 0)) {
@@ -123,21 +141,26 @@ void data_entry::load(std::istream & is, const info & i) {
 	
 	stored_flag_reader<flags> flagreader(is, i.version.bits());
 	
+	// 6.4.3 removed the flags that only the compiler uses
+	const bool compiler_flags = (i.version < INNO_VERSION(6, 4, 3));
+	
 	flagreader.add(VersionInfoValid);
-	flagreader.add(VersionInfoNotValid);
+	if(compiler_flags) {
+		flagreader.add(VersionInfoNotValid);
+	}
 	if(i.version >= INNO_VERSION(2, 0, 17) && i.version < INNO_VERSION(4, 0, 1)) {
 		flagreader.add(BZipped);
 	}
 	if(i.version >= INNO_VERSION(4, 0, 10)) {
 		flagreader.add(TimeStampInUTC);
 	}
-	if(i.version >= INNO_VERSION(4, 1, 0)) {
+	if(i.version >= INNO_VERSION(4, 1, 0) && compiler_flags) {
 		flagreader.add(IsUninstallerExe);
 	}
 	if(i.version >= INNO_VERSION(4, 1, 8)) {
 		flagreader.add(CallInstructionOptimized);
 	}
-	if(i.version >= INNO_VERSION(4, 2, 0)) {
+	if(i.version >= INNO_VERSION(4, 2, 0) && compiler_flags) {
 		flagreader.add(Touch);
 	}
 	if(i.version >= INNO_VERSION(4, 2, 2)) {
@@ -148,16 +171,26 @@ void data_entry::load(std::istream & is, const info & i) {
 	} else {
 		options |= ChunkCompressed;
 	}
-	if(i.version >= INNO_VERSION(5, 1, 13)) {
+	if(i.version >= INNO_VERSION(5, 1, 13) && compiler_flags) {
 		flagreader.add(SolidBreak);
 	}
-	if(i.version >= INNO_VERSION(5, 5, 7)) {
+	if(i.version >= INNO_VERSION(5, 5, 7) && i.version < INNO_VERSION(6, 3, 0)) {
 		// Actually added in Inno Setup 5.5.9 but the data version was not bumped
 		flagreader.add(Sign);
 		flagreader.add(SignOnce);
 	}
 	
-	options |= flagreader;
+	options |= flagreader.finalize();
+	
+	if(i.version >= INNO_VERSION(6, 3, 0) && compiler_flags) {
+		sign = stored_enum<stored_sign_mode>(is).get();
+	} else if(options & SignOnce) {
+		sign = Once;
+	} else if(options & Sign) {
+		sign = Yes;
+	} else {
+		sign = NoSetting;
+	}
 	
 	if(options & ChunkCompressed) {
 		chunk.compression = i.header.compression;
@@ -170,7 +203,9 @@ void data_entry::load(std::istream & is, const info & i) {
 	}
 	
 	if(options & ChunkEncrypted) {
-		if(i.version >= INNO_VERSION(5, 3, 9)) {
+		if(i.version >= INNO_VERSION(6, 4, 0)) {
+			chunk.encryption = stream::XChaCha20;
+		} else if(i.version >= INNO_VERSION(5, 3, 9)) {
 			chunk.encryption = stream::ARC4_SHA1;
 		} else {
 			chunk.encryption = stream::ARC4_MD5;
@@ -207,4 +242,11 @@ NAMES(setup::data_entry::flags, "File Location Option",
 	"sign",
 	"sign once",
 	"bzipped",
+)
+
+NAMES(setup::data_entry::sign_mode, "Sign Mode",
+	"no setting",
+	"yes",
+	"once",
+	"check",
 )

@@ -49,7 +49,16 @@ static const char * const kCompressionNames[] =
   { "Copy", "Deflate", "BZip2", "LZMA", "LZMA2", "Unknown" };
 static const char * const kFilterNames[] =
   { NULL, "IF4108", "IF5200", "IF5309", NULL };
-static const char * const kEncryptionName = "ARC4";
+static const char *GetEncryptionName(const stream::chunk &chunk)
+{
+  return chunk.encryption == stream::XChaCha20 ? "XChaCha20" : "ARC4";
+}
+
+// ARC4 chunks (before Inno Setup 6.4) start with a salt.
+static bool HasSalt(const stream::chunk &chunk)
+{
+  return chunk.encryption == stream::ARC4_MD5 || chunk.encryption == stream::ARC4_SHA1;
+}
 
 static unsigned GetCompressionIndex(const stream::chunk &chunk)
 {
@@ -75,7 +84,7 @@ AString GetMethodString(const setup::data_entry &entry)
   if (entry.chunk.encryption != stream::Plaintext)
   {
     s.Add_Space();
-    s += kEncryptionName;
+    s += GetEncryptionName(entry.chunk);
   }
   return s;
 }
@@ -99,7 +108,7 @@ void CInArchive::Clear()
 UInt64 CInArchive::GetChunkEnd(const stream::chunk &chunk) const
 {
   return (UInt64)Offsets.data_offset + chunk.offset + kChunkMagicSize
-      + (chunk.encryption != stream::Plaintext ? kChunkSaltSize : 0) + chunk.size;
+      + (HasSalt(chunk) ? kChunkSaltSize : 0) + chunk.size;
 }
 
 void CInArchive::AddExtraFile(const std::string &name, const std::string *stored)
@@ -531,7 +540,7 @@ void CInArchive::ComputeSizes(const Byte *peHeaders, size_t peHeadersSize)
   // The archive method lists the methods, filters and encryption of all files.
   bool compressions[Z7_ARRAY_SIZE(kCompressionNames)] = { false };
   bool filters[Z7_ARRAY_SIZE(kFilterNames)] = { false };
-  bool encrypted = false;
+  const char *encryption = NULL;
   for (size_t i = 0; i < Items.size(); i++)
   {
     if (Items[i].FileIndex < 0)
@@ -541,7 +550,7 @@ void CInArchive::ComputeSizes(const Byte *peHeaders, size_t peHeadersSize)
     if (GetFilterName(entry.file))
       filters[(unsigned)entry.file.filter] = true;
     if (entry.chunk.encryption != stream::Plaintext)
-      encrypted = true;
+      encryption = GetEncryptionName(entry.chunk);
   }
   for (unsigned i = 0; i < Z7_ARRAY_SIZE(kCompressionNames); i++)
     if (compressions[i])
@@ -555,10 +564,10 @@ void CInArchive::ComputeSizes(const Byte *peHeaders, size_t peHeadersSize)
       Method.Add_Space_if_NotEmpty();
       Method += kFilterNames[i];
     }
-  if (encrypted)
+  if (encryption)
   {
     Method.Add_Space_if_NotEmpty();
-    Method += kEncryptionName;
+    Method += encryption;
   }
 
   // The compiler writes the size of the installer to the offset table.

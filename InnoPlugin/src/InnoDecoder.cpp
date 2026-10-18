@@ -228,8 +228,13 @@ HRESULT CChunkDecoder::Open(IInStream *stream, UInt64 dataOffset, const stream::
   if (memcmp(magic, kChunkMagic, sizeof(magic)) != 0)
     return S_FALSE;
 
+  // XChaCha20 (Inno Setup 6.4+) is not decrypted here yet.
+  const bool arc4 = (chunk.encryption == stream::ARC4_MD5 || chunk.encryption == stream::ARC4_SHA1);
+  if (chunk.encryption != stream::Plaintext && !arc4)
+    return E_NOTIMPL;
+
   char salt[8];
-  if (chunk.encryption != stream::Plaintext)
+  if (arc4)
   {
     RINOK(ReadStream_FALSE(stream, salt, sizeof(salt)))
   }
@@ -240,7 +245,7 @@ HRESULT CChunkDecoder::Open(IInStream *stream, UInt64 dataOffset, const stream::
   _limitedSpec->Init(chunk.size);
   CMyComPtr<ISequentialInStream> input = _limited;
 
-  if (chunk.encryption != stream::Plaintext)
+  if (arc4)
   {
     const bool sha1 = (chunk.encryption == stream::ARC4_SHA1);
     crypto::hasher hasher(sha1 ? crypto::SHA1 : crypto::MD5);

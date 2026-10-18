@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/task.cpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/task.cpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 /*
  * Copyright (C) 2011-2019 Daniel Scharrer
@@ -48,7 +48,11 @@ void task_entry::load(std::istream & is, const info & i) {
 		check.clear();
 	}
 	if(i.version >= INNO_VERSION(4, 0, 0) || (i.version.is_isx() && i.version >= INNO_VERSION(3, 0, 3))) {
-		level = util::load<boost::int32_t>(is);
+		if(i.version >= INNO_VERSION(6, 7, 0)) {
+			level = util::load<boost::uint8_t>(is);
+		} else {
+			level = util::load<boost::int32_t>(is);
+		}
 	} else {
 		level = 0;
 	}
@@ -74,7 +78,7 @@ void task_entry::load(std::istream & is, const info & i) {
 		flagreader.add(DontInheritCheck);
 	}
 	
-	options = flagreader;
+	options = flagreader.finalize();
 }
 
 } // namespace setup

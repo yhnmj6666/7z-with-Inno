@@ -1,4 +1,4 @@
-// Origin: innoextract src/util/math.hpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/util/math.hpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 #include "../minihead.hpp"
 /*
@@ -102,6 +102,11 @@ T safe_left_shift(T value) {
 //! Rotate left.
 template <class T> T rotl_fixed(T x, unsigned int y) {
 	return T((x << y) | (x >> (sizeof(T) * 8 - y)));
+}
+
+//! Rotate right.
+template <class T> T rotr_fixed(T x, unsigned int y) {
+	return T((x >> y) | (x << (sizeof(T) * 8 - y)));
 }
 
 #if defined(_MSC_VER) && _MSC_VER >= 1400 && !defined(__INTEL_COMPILER)

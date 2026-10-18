@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/registry.cpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/registry.cpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 /*
  * Copyright (C) 2011-2020 Daniel Scharrer
@@ -105,6 +105,11 @@ void registry_entry::load(std::istream & is, const info & i) {
 		type = stored_enum<stored_registry_entry_type_0>(is).get();
 	}
 	
+	unsigned bitness = 0;
+	if(i.version >= INNO_VERSION_EXT(7, 0, 0, 3)) {
+		bitness = load_bitness(is);
+	}
+	
 	stored_flag_reader<flags> flagreader(is, i.version.bits());
 	
 	if(i.version.bits() != 16) {
@@ -127,12 +132,18 @@ void registry_entry::load(std::istream & is, const info & i) {
 	if(i.version >= INNO_VERSION(1, 3, 16)) {
 		flagreader.add(DontCreateKey);
 	}
-	if(i.version >= INNO_VERSION(5, 1, 0)) {
+	if(i.version >= INNO_VERSION(5, 1, 0) && i.version < INNO_VERSION_EXT(7, 0, 0, 3)) {
 		flagreader.add(Bits32);
 		flagreader.add(Bits64);
 	}
 	
-	options = flagreader;
+	options = flagreader.finalize();
+	
+	if(bitness == 32) {
+		options |= Bits32;
+	} else if(bitness == 64) {
+		options |= Bits64;
+	}
 }
 
 } // namespace setup

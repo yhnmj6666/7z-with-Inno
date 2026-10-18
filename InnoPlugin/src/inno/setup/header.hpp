@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/header.hpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/header.hpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 #include "../minihead.hpp"
 /*
@@ -46,8 +46,6 @@
 namespace setup {
 
 struct version;
-
-typedef char salt[8];
 
 struct header {
 	
@@ -106,6 +104,13 @@ struct header {
 		AppNameHasConsts,
 		UsePreviousPrivileges,
 		WizardResizable,
+		UninstallLogging,
+		WizardModern,
+		WizardBorderStyled,
+		WizardKeepAspectRatio,
+		WizardLightButtonsUnstyled,
+		RedirectionGuard,
+		WizardBevelsHidden,
 		
 		// Obsolete flags
 		Uninstallable,
@@ -129,6 +134,7 @@ struct header {
 		X86,
 		Amd64,
 		IA64,
+		ARM32,
 		ARM64
 	);
 	
@@ -168,6 +174,15 @@ struct header {
 	std::string setup_mutex;
 	std::string changes_environment;
 	std::string changes_associations;
+	std::string architectures_allowed_expr;
+	std::string architectures_installed_in_64bit_mode_expr;
+	std::string close_applications_filter_excludes;
+	std::string seven_zip_library_name;
+	std::string use_previous_app_dir;
+	std::string use_previous_group;
+	std::string use_previous_setup_type;
+	std::string use_previous_tasks;
+	std::string use_previous_user_info;
 	std::string license_text;
 	std::string info_before;
 	std::string info_after;
@@ -183,6 +198,7 @@ struct header {
 	size_t component_count;
 	size_t task_count;
 	size_t directory_count;
+	size_t issig_key_count;
 	size_t file_count;
 	size_t data_entry_count;
 	size_t icon_count;
@@ -193,6 +209,8 @@ struct header {
 	size_t run_entry_count;
 	size_t uninstall_run_entry_count;
 	
+	boost::uint32_t compiled_code_version;
+	
 	windows_version_range winver;
 	
 	typedef boost::uint32_t Color;
@@ -200,6 +218,12 @@ struct header {
 	Color back_color2;
 	Color image_back_color;
 	Color small_image_back_color;
+	Color wizard_back_color;
+	Color image_back_color_dark;
+	Color small_image_back_color_dark;
+	Color wizard_back_color_dark;
+	boost::uint8_t image_opacity;
+	boost::uint8_t back_image_opacity;
 	
 	enum style {
 		ClassicStyle,
@@ -209,6 +233,20 @@ struct header {
 	boost::uint32_t wizard_resize_percent_x;
 	boost::uint32_t wizard_resize_percent_y;
 	
+	enum dark_style {
+		LightStyle,
+		DarkStyle,
+		DynamicStyle
+	};
+	dark_style wizard_dark_style;
+	
+	enum control_styling {
+		StyleAllControls,
+		StyleAllButButtons,
+		StyleOnlyRequired
+	};
+	control_styling wizard_light_control_styling;
+	
 	enum alpha_format {
 		AlphaIgnored,
 		AlphaDefined,
@@ -216,7 +254,17 @@ struct header {
 	};
 	alpha_format image_alpha_format;
 	
+	/*
+	 * Password check: CRC32, MD5 or SHA-1 of the password, or (6.4.0+) the
+	 * PBKDF2-SHA256+XChaCha20 password test, which 6.5.0 and later store in the
+	 * encryption header instead (see info::load).
+	 */
 	crypto::checksum password;
+	/*
+	 * Salt for the password hash ("PasswordCheckHash" + 8 bytes), or (6.4.0+)
+	 * the PBKDF2 salt (16 bytes), iteration count (4 bytes) and XChaCha20 base
+	 * nonce (24 bytes).
+	 */
 	std::string password_salt;
 	
 	boost::int64_t extra_disk_space_required;
@@ -286,6 +334,10 @@ struct header {
 	
 	void decode(util::codepage_id codepage);
 	
+private:
+	
+	flags load_flags(std::istream & is, const version & version);
+	
 };
 
 } // namespace setup
@@ -297,6 +349,8 @@ NAMED_ENUM(setup::header::alpha_format)
 NAMED_ENUM(setup::header::install_verbosity)
 NAMED_ENUM(setup::header::log_mode)
 NAMED_ENUM(setup::header::style)
+NAMED_ENUM(setup::header::dark_style)
+NAMED_ENUM(setup::header::control_styling)
 NAMED_ENUM(setup::header::auto_bool)
 NAMED_ENUM(setup::header::privilege_level)
 NAMED_ENUM(setup::header::language_detection_method)

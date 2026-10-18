@@ -59,6 +59,14 @@ protected:
 		winver.load(is, version);
 	}
 	
+	/*!
+	 * Load the entry bitness stored by Inno Setup 7.0.0 and newer
+	 * (replaces the 32 bit / 64 bit entry flags).
+	 *
+	 * eturn 32 or 64 for entries forced into 32-bit or 64-bit mode, 0 otherwise.
+	 */
+	static unsigned load_bitness(std::istream & is);
+	
 };
 
 } // namespace setup

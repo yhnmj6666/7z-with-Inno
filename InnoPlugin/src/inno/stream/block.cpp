@@ -31,6 +31,7 @@
 #include "../../InnoBufferDecoder.h"
 
 #include "../crypto/crc32.hpp"
+#include "../crypto/xchacha20.hpp"
 #include "../setup/version.hpp"
 #include "../util/endian.hpp"
 #include "../util/enum.hpp"
@@ -54,11 +55,15 @@ enum block_compression {
  *
  * block_error is thrown if a chunk checksum is wrong, if the data ends early or if there
  * is trailing data: 0 < (total size % (4096 + 4)) < 5
+ *
+ * The checksums cover the stored bytes; encrypted blocks are decrypted after checking them,
+ * with one cipher stream running across all chunks of the block.
  */
-void read_block_chunks(std::istream & base, boost::uint32_t stored_size, std::string & data) {
+void read_block_chunks(std::istream & base, boost::uint64_t stored_size, std::string & data,
+                       crypto::xchacha20 * cipher) {
 	
 	data.clear();
-	data.reserve(std::min(size_t(stored_size), size_t(1) << 20));
+	data.reserve(size_t(std::min(stored_size, boost::uint64_t(1) << 20)));
 	
 	char buffer[4096];
 	while(stored_size) {
@@ -73,20 +78,24 @@ void read_block_chunks(std::istream & base, boost::uint32_t stored_size, std::st
 			throw block_error("unexpected block end");
 		}
 		boost::uint32_t block_crc32 = util::little_endian::load<boost::uint32_t>(temp);
-		stored_size -= boost::uint32_t(sizeof(temp));
+		stored_size -= sizeof(temp);
 		
-		size_t length = std::min(size_t(stored_size), sizeof(buffer));
+		size_t length = size_t(std::min(stored_size, boost::uint64_t(sizeof(buffer))));
 		base.read(buffer, std::streamsize(length));
 		if(size_t(base.gcount()) != length) {
 			throw block_error("unexpected block end");
 		}
-		stored_size -= boost::uint32_t(length);
+		stored_size -= length;
 		
 		crypto::crc32 actual;
 		actual.init();
 		actual.update(buffer, length);
 		if(actual.finalize() != block_crc32) {
 			throw block_error("block CRC32 mismatch");
+		}
+		
+		if(cipher) {
+			cipher->crypt(buffer, buffer, length);
 		}
 		
 		data.append(buffer, length);
@@ -107,7 +116,8 @@ NAMES(stream::block_compression, "Compression",
 
 namespace stream {
 
-block_reader::pointer block_reader::get(std::istream & base, const setup::version & version, size_t* block_size) {
+block_reader::pointer block_reader::get(std::istream & base, const setup::version & version, size_t* block_size,
+                                        const std::string & key, boost::uint32_t first_slice) {
 	
 	USE_ENUM_NAMES(block_compression)
 	
@@ -115,12 +125,16 @@ block_reader::pointer block_reader::get(std::istream & base, const setup::versio
 	crypto::crc32 actual_checksum;
 	actual_checksum.init();
 	
-	boost::uint32_t stored_size;
+	boost::uint64_t stored_size;
 	block_compression compression;
 	
 	if(version >= INNO_VERSION(4, 0, 9)) {
 		
-		stored_size = actual_checksum.load<boost::uint32_t>(base);
+		if(version >= INNO_VERSION(6, 7, 0)) {
+			stored_size = actual_checksum.load<boost::uint64_t>(base);
+		} else {
+			stored_size = actual_checksum.load<boost::uint32_t>(base);
+		}
 		boost::uint8_t compressed = actual_checksum.load<boost::uint8_t>(base);
 		
 		compression = compressed ? (version >= INNO_VERSION(4, 1, 6) ? LZMA1 : Zlib) : Stored;
@@ -137,7 +151,7 @@ block_reader::pointer block_reader::get(std::istream & base, const setup::versio
 		}
 		
 		// Add the size of a CRC32 checksum for each 4KiB subblock.
-		stored_size += boost::uint32_t(util::ceildiv<boost::uint64_t>(stored_size, 4096) * 4);
+		stored_size += util::ceildiv<boost::uint64_t>(stored_size, 4096) * 4;
 	}
 	
 	if(actual_checksum.finalize() != expected_checksum) {
@@ -147,11 +161,20 @@ block_reader::pointer block_reader::get(std::istream & base, const setup::versio
 	debug("[block] size: " << stored_size << "  compression: " << compression);
 
 	if(block_size != nullptr) {
-        *block_size = stored_size;
+        *block_size = size_t(stored_size);
     }
 	
 	std::string stored;
-	read_block_chunks(base, stored_size, stored);
+	if(!key.empty()) {
+		if(key.size() != crypto::xchacha20::key_size + crypto::xchacha20::nonce_size) {
+			throw block_error("unexpected key size");
+		}
+		crypto::xchacha20 cipher;
+		cipher.init(key, 0, first_slice);
+		read_block_chunks(base, stored_size, stored, &cipher);
+	} else {
+		read_block_chunks(base, stored_size, stored, NULL);
+	}
 	
 	const Byte * stored_data = reinterpret_cast<const Byte *>(stored.data());
 	util::unique_ptr<std::istringstream>::type result(new std::istringstream);

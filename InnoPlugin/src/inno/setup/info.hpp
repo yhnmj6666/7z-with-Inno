@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/info.hpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/info.hpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 #include "../minihead.hpp"
 /*
@@ -29,6 +29,7 @@
 #ifndef INNOEXTRACT_SETUP_INFO_HPP
 #define INNOEXTRACT_SETUP_INFO_HPP
 
+#include <string>
 #include <vector>
 #include <iosfwd>
 
@@ -89,6 +90,15 @@ struct info {
 	
 	setup::version version;
 	
+	//! What the encryption header of Inno Setup 6.5.0 and newer says is encrypted.
+	enum encryption_use {
+		EncryptionNone,  //!< Nothing is encrypted, or the version has no encryption header.
+		EncryptionFiles, //!< The file data is encrypted.
+		EncryptionFull,  //!< The file data and the setup headers are encrypted.
+	};
+	
+	encryption_use encryption;
+	
 	util::codepage_id codepage;
 	
 	setup::header header;
@@ -110,10 +120,14 @@ struct info {
 	std::vector<task_entry>       tasks;                    //! \c Tasks
 	std::vector<type_entry>       types;                    //! \c Types
 	
-	//! Images displayed in the installer UI.
+	//! Images displayed in the installer UI (BMP files, or PNG files in newer versions).
 	//! Loading enabled by \c WizardImages
 	std::vector<std::string> wizard_images;
 	std::vector<std::string> wizard_images_small;
+	std::vector<std::string> wizard_images_back;       //!< introduced in 6.7.0
+	std::vector<std::string> wizard_images_dark;       //!< introduced in 6.6.0
+	std::vector<std::string> wizard_images_small_dark; //!< introduced in 6.6.0
+	std::vector<std::string> wizard_images_back_dark;  //!< introduced in 6.7.0
 	
 	//! Contents of the helper DLL used to decompress setup data in some versions.
 	//! Loading enabled by \c DecompressorDll
@@ -135,7 +149,49 @@ struct info {
 	 */
 	void load(std::istream & is, entry_types entries, util::codepage_id force_codepage = 0);
 	
+	/*!
+	 * Load the setup data version and, for Inno Setup 6.5.0 and newer, the encryption header.
+	 *
+	 * \param is The input stream, positioned at \ref loader::offsets::header_offset.
+	 *
+	 * Afterwards \ref encryption tells if \ref load_headers needs a key. Nothing else is
+	 * read for unknown versions that are newer than all known ones
+	 * (see \ref version::is_newer_than_known).
+	 */
+	void load_version(std::istream & is);
+	
+	/*!
+	 * Load the setup headers following the data read by \ref load_version.
+	 *
+	 * \param key Key from \ref get_key if \ref encryption is \c EncryptionFull.
+	 *
+	 * The other parameters are the same as for \ref load.
+	 */
+	void load_headers(std::istream & is, entry_types entries, util::codepage_id force_codepage = 0,
+	                  const std::string & key = std::string());
+	
+	/*!
+	 * Derive the key used to decrypt the setup data from a password (UTF-8).
+	 *
+	 * \return the password in the encoding of the installer (ARC4, before Inno Setup 6.4.0)
+	 *         or the XChaCha20 key followed by the base nonce (6.4.0 and newer).
+	 */
+	std::string get_key(const std::string & password) const;
+	
+	//! Check a key from \ref get_key against the password check stored in the setup headers.
+	bool check_key(const std::string & key) const;
+	
 private:
+	
+	//! Encryption header data (6.5.0 and newer): KDF salt, KDF iterations and base nonce
+	std::string encryption_salt;
+	//! Encryption header data (6.5.0 and newer): the password test
+	char encryption_password_test[4];
+	
+	void load_encryption_header(std::istream & is);
+	
+	//! Store the encryption header in \ref header after loading it.
+	void apply_encryption_header();
 	
 	/*!
 	 * Load setup headers for a specific version.
@@ -150,7 +206,8 @@ private:
 	 *
 	 * This function does not set the \ref version member.
 	 */
-	void try_load(std::istream & is, entry_types entries, util::codepage_id force_codepage);
+	void try_load(std::istream & is, entry_types entries, util::codepage_id force_codepage,
+	              const std::string & key);
 	
 	template <class Entry>
 	void load_entries(std::istream & is, entry_types entries, size_t count,

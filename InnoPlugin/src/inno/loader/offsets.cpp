@@ -1,5 +1,5 @@
 // Origin: innoextract src/loader/offsets.cpp, commit 83c1544b3f (master, 2021-12-02).
-// Modified for the 7-Zip Inno plugin.
+// Modified for the 7-Zip Inno plugin (offset table revision 2 from Inno Setup 6.5.0).
 /*
  * Copyright (C) 2011-2020 Daniel Scharrer
  *
@@ -144,19 +144,26 @@ bool offsets::load_offsets_at(std::istream & is, boost::uint32_t pos) {
 	checksum.init();
 	checksum.update(magic, sizeof(magic));
 	
+	boost::uint32_t revision = 0;
 	if(version >= INNO_VERSION(5, 1,  5)) {
-		boost::uint32_t revision = checksum.load<boost::uint32_t>(is);
+		revision = checksum.load<boost::uint32_t>(is);
 		if(is.fail()) {
 			is.clear();
 			debug("could not read loader header revision");
 			return false;
-		} else if(revision != 1) {
+		} else if(revision != 1 && revision != 2) {
 			log_warning << "Unexpected setup loader revision: " << revision;
 		}
 	}
 	
-	total_size = checksum.load<boost::uint32_t>(is);
-	exe_offset = checksum.load<boost::uint32_t>(is);
+	// Revision 2 (Inno Setup 6.5.0+) uses 64-bit offsets and sizes
+	if(revision >= 2) {
+		total_size = checksum.load<boost::uint64_t>(is);
+		exe_offset = checksum.load<boost::uint64_t>(is);
+	} else {
+		total_size = checksum.load<boost::uint32_t>(is);
+		exe_offset = checksum.load<boost::uint32_t>(is);
+	}
 	
 	if(version >= INNO_VERSION(4, 1, 6)) {
 		exe_compressed_size = 0;
@@ -180,8 +187,14 @@ bool offsets::load_offsets_at(std::istream & is, boost::uint32_t pos) {
 		message_offset = util::load<boost::uint32_t>(is);
 	}
 	
-	header_offset = checksum.load<boost::uint32_t>(is);
-	data_offset = checksum.load<boost::uint32_t>(is);
+	if(revision >= 2) {
+		header_offset = checksum.load<boost::uint64_t>(is);
+		data_offset = checksum.load<boost::uint64_t>(is);
+		(void)checksum.load<boost::uint32_t>(is); // padding
+	} else {
+		header_offset = checksum.load<boost::uint32_t>(is);
+		data_offset = checksum.load<boost::uint32_t>(is);
+	}
 	
 	if(is.fail()) {
 		is.clear();

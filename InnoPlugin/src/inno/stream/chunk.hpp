@@ -1,4 +1,4 @@
-// Origin: innoextract src/stream/chunk.hpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/stream/chunk.hpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin: the chunk reader is replaced by
 // NArchive::NInno::CChunkDecoder (src/InnoDecoder.h).
 #include "../minihead.hpp"
@@ -57,6 +57,7 @@ enum encryption_method {
 	Plaintext,
 	ARC4_MD5,
 	ARC4_SHA1,
+	XChaCha20,
 };
 
 /*!
@@ -69,9 +70,9 @@ struct chunk {
 	boost::uint32_t first_slice;    //!< Slice where the chunk starts.
 	boost::uint32_t last_slice;     //!< Slice where the chunk ends.
 	
-	boost::uint32_t sort_offset;
+	boost::uint64_t sort_offset;
 	
-	boost::uint32_t offset;         //!< Offset of the compressed chunk in firstSlice.
+	boost::uint64_t offset;         //!< Offset of the compressed chunk in firstSlice.
 	boost::uint64_t size;           //! Total compressed size of the chunk.
 	
 	compression_method compression; //!< Compression method used by the chunk.

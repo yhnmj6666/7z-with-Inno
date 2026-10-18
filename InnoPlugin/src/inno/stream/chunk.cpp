@@ -1,4 +1,4 @@
-// Origin: innoextract src/stream/chunk.cpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/stream/chunk.cpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin: the chunk reader is replaced by
 // NArchive::NInno::CChunkDecoder (src/InnoDecoder.cpp).
 /*
@@ -65,4 +65,5 @@ NAMES(stream::encryption_method, "Encryption Method",
 	"plaintext",
 	"rc4 + md5",
 	"rc4 + sha1",
+	"xchacha20",
 )

@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/icon.cpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/icon.cpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 /*
  * Copyright (C) 2011-2020 Daniel Scharrer
@@ -99,7 +99,7 @@ void icon_entry::load(std::istream & is, const info & i) {
 	if(i.version.bits() != 16) {
 		flagreader.add(UseAppPaths);
 	}
-	if(i.version >= INNO_VERSION(5, 0, 3)) {
+	if(i.version >= INNO_VERSION(5, 0, 3) && i.version < INNO_VERSION(6, 3, 0)) {
 		flagreader.add(FolderShortcut);
 	}
 	if(i.version >= INNO_VERSION(5, 4, 2)) {
@@ -112,7 +112,7 @@ void icon_entry::load(std::istream & is, const info & i) {
 		flagreader.add(HasAppUserModelToastActivatorCLSID);
 	}
 	
-	options = flagreader;
+	options = flagreader.finalize();
 }
 
 } // namespace setup
@@ -124,6 +124,7 @@ NAMES(setup::icon_entry::flags, "Icon Option",
 	"folder shortcut",
 	"exclude from show in new install",
 	"prevent pinning",
+	"has app user model toast activator clsid",
 	"run minimized",
 )
 

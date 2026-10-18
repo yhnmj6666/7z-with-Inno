@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/info.cpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/info.cpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 /*
  * Copyright (C) 2011-2020 Daniel Scharrer
@@ -23,11 +23,17 @@
 #include "../setup/info.hpp"
 
 #include <cassert>
+#include <cstring>
 #include <istream>
 #include <sstream>
 
 //#include <boost/foreach.hpp>
 
+#include "../crypto/crc32.hpp"
+#include "../crypto/hasher.hpp"
+#include "../crypto/pbkdf2.hpp"
+#include "../crypto/sha256.hpp"
+#include "../crypto/xchacha20.hpp"
 #include "../setup/component.hpp"
 #include "../setup/data.hpp"
 #include "../setup/delete.hpp"
@@ -44,6 +50,7 @@
 #include "../setup/task.hpp"
 #include "../setup/type.hpp"
 #include "../stream/block.hpp"
+#include "../util/endian.hpp"
 #include "../util/fstream.hpp"
 #include "../util/load.hpp"
 #include "../util/log.hpp"
@@ -76,13 +83,16 @@ void load_wizard_images(std::istream & is, const setup::version & version,
 	
 	size_t count = 1;
 	if(version >= INNO_VERSION(5, 6, 0)) {
-		count = util::load<boost::uint32_t>(is);
+		// 6.6.1+: -1 if the dark images are the same as the regular ones
+		boost::int32_t stored_count = util::load<boost::int32_t>(is);
+		count = stored_count < 0 ? 0 : size_t(stored_count);
 	}
 	
 	if(entries & (info::WizardImages | info::NoSkip)) {
-		images.resize(count);
+		images.clear();
 		for(size_t i = 0; i < count; i++) {
-			is >> util::binary_string(images[i]);
+			images.push_back(std::string());
+			is >> util::binary_string(images.back());
 		}
 		if(version < INNO_VERSION(5, 6, 0) && images[0].empty()) {
 			images.clear();
@@ -101,11 +111,26 @@ void load_wizard_and_decompressor(std::istream & is, const setup::version & vers
 	
 	info.wizard_images.clear();
 	info.wizard_images_small.clear();
+	info.wizard_images_back.clear();
+	info.wizard_images_dark.clear();
+	info.wizard_images_small_dark.clear();
+	info.wizard_images_back_dark.clear();
 	
 	load_wizard_images(is, version, info.wizard_images, entries);
 	
 	if(version >= INNO_VERSION(2, 0, 0) || version.is_isx()) {
 		load_wizard_images(is, version, info.wizard_images_small, entries);
+	}
+	
+	if(version >= INNO_VERSION(6, 7, 0)) {
+		load_wizard_images(is, version, info.wizard_images_back, entries);
+	}
+	if(version >= INNO_VERSION(6, 6, 0)) {
+		load_wizard_images(is, version, info.wizard_images_dark, entries);
+		load_wizard_images(is, version, info.wizard_images_small_dark, entries);
+	}
+	if(version >= INNO_VERSION(6, 7, 0)) {
+		load_wizard_images(is, version, info.wizard_images_back_dark, entries);
 	}
 	
 	info.decompressor_dll.clear();
@@ -120,8 +145,13 @@ void load_wizard_and_decompressor(std::istream & is, const setup::version & vers
 		}
 	}
 	
+	if(!header.seven_zip_library_name.empty()) {
+		// 7-Zip library used to extract archives (6.5.0+) - we don't need this
+		util::binary_string::skip(is);
+	}
+	
 	info.decrypt_dll.clear();
-	if(header.options & header::EncryptionUsed) {
+	if((header.options & header::EncryptionUsed) && version < INNO_VERSION(6, 4, 0)) {
 		if(entries & (info::DecryptDll | info::NoSkip)) {
 			is >> util::binary_string(info.decrypt_dll);
 		} else {
@@ -142,7 +172,8 @@ void check_is_end(stream::block_reader::pointer & is, const char * what) {
 
 } // anonymous namespace
 
-void info::try_load(std::istream & is, entry_types entries, util::codepage_id force_codepage) {
+void info::try_load(std::istream & is, entry_types entries, util::codepage_id force_codepage,
+                    const std::string & key) {
 	
 	debug("trying to load setup headers for version " << version);
 	
@@ -150,12 +181,19 @@ void info::try_load(std::istream & is, entry_types entries, util::codepage_id fo
 		entries |= Languages;
 	}
 	
+	// Inno Setup XORs -2 and -3 into the nonce of the two encrypted header blocks
+	const std::string & block_key = (encryption == EncryptionFull) ? key : std::string();
+	
 	std::shared_ptr<size_t> header_size = std::make_shared<size_t>();
-	stream::block_reader::pointer reader = stream::block_reader::get(is, version, header_size.get());
+	stream::block_reader::pointer reader = stream::block_reader::get(is, version, header_size.get(),
+	                                                                 block_key, boost::uint32_t(-2));
 	header.header_size = *header_size;
 	
 	debug("loading main header");
 	header.load(*reader, version);
+	if(version >= INNO_VERSION(6, 5, 0)) {
+		apply_encryption_header();
+	}
 	
 	debug("loading languages");
 	load_entries(*reader, entries, header.language_count, languages, Languages);
@@ -203,6 +241,15 @@ void info::try_load(std::istream & is, entry_types entries, util::codepage_id fo
 	load_entries(*reader, entries, header.task_count, tasks, Tasks);
 	debug("loading directories");
 	load_entries(*reader, entries, header.directory_count, directories, Directories);
+	if(version >= INNO_VERSION(6, 5, 0)) {
+		debug("loading issig keys");
+		for(size_t i = 0; i < header.issig_key_count; i++) {
+			// PublicX, PublicY and RuntimeID - we don't need these
+			util::binary_string::skip(*reader);
+			util::binary_string::skip(*reader);
+			util::binary_string::skip(*reader);
+		}
+	}
 	debug("loading files");
 	load_entries(*reader, entries, header.file_count, files, Files);
 	debug("loading icons");
@@ -229,7 +276,7 @@ void info::try_load(std::istream & is, entry_types entries, util::codepage_id fo
 	
 	// restart the compression stream
 	check_is_end(reader, "unknown data at end of primary header stream");
-	reader = stream::block_reader::get(is, version, header_size.get());
+	reader = stream::block_reader::get(is, version, header_size.get(), block_key, boost::uint32_t(-3));
 	header.header_size += *header_size;
 
 	debug("loading data entries");
@@ -240,7 +287,71 @@ void info::try_load(std::istream & is, entry_types entries, util::codepage_id fo
 
 void info::load(std::istream & is, entry_types entries, util::codepage_id force_codepage) {
 	
+	load_version(is);
+	
+	load_headers(is, entries, force_codepage);
+	
+}
+
+void info::load_version(std::istream & is) {
+	
 	version.load(is);
+	
+	encryption = EncryptionNone;
+	encryption_salt.clear();
+	std::memset(encryption_password_test, 0, sizeof(encryption_password_test));
+	
+	if(version >= INNO_VERSION(6, 5, 0) && !version.is_newer_than_known()) {
+		load_encryption_header(is);
+	}
+	
+}
+
+void info::load_encryption_header(std::istream & is) {
+	
+	// CRC32 of the encryption header, then TSetupEncryptionHeader: EncryptionUse (1 byte),
+	// KDFSalt (16 bytes), KDFIterations (4 bytes), BaseNonce (24 bytes), PasswordTest (4 bytes)
+	char data[4 + 1 + 44 + 4];
+	is.read(data, std::streamsize(sizeof(data)));
+	if(is.fail()) {
+		throw std::runtime_error("could not read the encryption header");
+	}
+	
+	crypto::crc32 checksum;
+	checksum.init();
+	checksum.update(data + 4, sizeof(data) - 4);
+	if(checksum.finalize() != util::little_endian::load<boost::uint32_t>(data)) {
+		throw std::runtime_error("encryption header CRC32 mismatch");
+	}
+	
+	switch(boost::uint8_t(data[4])) {
+		case 0: encryption = EncryptionNone; break;
+		case 1: encryption = EncryptionFiles; break;
+		case 2: encryption = EncryptionFull; break;
+		default: throw std::runtime_error("unknown encryption type");
+	}
+	
+	encryption_salt.assign(data + 5, 44);
+	std::memcpy(encryption_password_test, data + 5 + 44, sizeof(encryption_password_test));
+	
+	apply_encryption_header();
+	
+}
+
+void info::apply_encryption_header() {
+	
+	header.password.type = crypto::PBKDF2_SHA256_XChaCha20;
+	std::memcpy(header.password.check, encryption_password_test, sizeof(header.password.check));
+	header.password_salt = encryption_salt;
+	
+	if(encryption != EncryptionNone) {
+		header.options |= header::EncryptionUsed;
+	}
+	
+}
+
+void info::load_headers(std::istream & is, entry_types entries, util::codepage_id force_codepage,
+                        const std::string & key) {
 	
 	if(!version.known) {
 		if(entries & NoUnknownVersion) {
@@ -272,7 +383,7 @@ void info::load(std::istream & is, entry_types entries, util::codepage_id force_
 		try {
 			
 			// Try to parse headers for this version
-			try_load(is, entries, force_codepage);
+			try_load(is, entries, force_codepage, key);
 			
 			if(warnings) {
 				// Parsed without errors but with warnings - try other versions first
@@ -298,7 +409,7 @@ void info::load(std::istream & is, entry_types entries, util::codepage_id force_
 					// Rewind to a previous version that had better results and report those
 					version.value = listed_version;
 					warnings.restore();
-					try_load(is, entries, force_codepage);
+					try_load(is, entries, force_codepage, key);
 				} else {
 					// Otherwise. report results for the current version
 					warnings.flush();
@@ -319,7 +430,69 @@ void info::load(std::istream & is, entry_types entries, util::codepage_id force_
 	
 }
 
-info::info() : codepage(0) { }
+std::string info::get_key(const std::string & password) const {
+	
+	std::string encoded_password;
+	util::codepage_id cp = codepage;
+	if(version.is_unicode()) {
+		cp = util::cp_utf16le;
+	}
+	util::from_utf8(password, encoded_password, cp);
+	
+	if(header.password.type == crypto::PBKDF2_SHA256_XChaCha20) {
+		
+		// 16 bytes PBKDF2 salt + 4 bytes PBKDF2 iterations + 24 bytes XChaCha20 base nonce
+		if(header.password_salt.length() != 20 + crypto::xchacha20::nonce_size) {
+			throw std::runtime_error("unexpected password salt size");
+		}
+		
+		std::string result;
+		result.resize(crypto::xchacha20::key_size + crypto::xchacha20::nonce_size);
+		typedef crypto::pbkdf2<crypto::sha256> pbkdf2;
+		pbkdf2::derive(encoded_password.c_str(), encoded_password.length(), &header.password_salt[0], 16,
+		               util::little_endian::load<boost::uint32_t>(&header.password_salt[16]), &result[0],
+		               crypto::xchacha20::key_size);
+		
+		std::memcpy(&result[crypto::xchacha20::key_size], &header.password_salt[20],
+		            crypto::xchacha20::nonce_size);
+		
+		return result;
+	}
+	
+	return encoded_password;
+}
+
+bool info::check_key(const std::string & key) const {
+	
+	if(header.password.type == crypto::PBKDF2_SHA256_XChaCha20) {
+		
+		if(key.length() != crypto::xchacha20::key_size + crypto::xchacha20::nonce_size) {
+			throw std::runtime_error("unexpected key size");
+		}
+		
+		// The password test is a zero 32-bit value encrypted with first slice -1
+		crypto::xchacha20 cipher;
+		cipher.init(key, 0, boost::uint32_t(-1));
+		
+		char buffer[] = { 0, 0, 0, 0 };
+		cipher.crypt(buffer, buffer, sizeof(buffer));
+		
+		return (std::memcmp(buffer, header.password.check, sizeof(buffer)) == 0);
+		
+	} else {
+		
+		crypto::hasher checksum(header.password.type);
+		checksum.update(header.password_salt.c_str(), header.password_salt.length());
+		checksum.update(key.c_str(), key.length());
+		return (checksum.finalize() == header.password);
+		
+	}
+	
+}
+
+info::info() : encryption(EncryptionNone), codepage(0) {
+	std::memset(encryption_password_test, 0, sizeof(encryption_password_test));
+}
 info::~info() { }
 
 } // namespace setup

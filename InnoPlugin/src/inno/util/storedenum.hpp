@@ -1,4 +1,4 @@
-// Origin: innoextract src/util/storedenum.hpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/util/storedenum.hpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 #include "../minihead.hpp"
 #ifdef _MSC_VER
@@ -243,9 +243,21 @@ public:
 		pos = (pos + 1) % stored_bits;
 	}
 	
-	operator flag_type() const {
+	flag_type finalize() const {
 		if(bytes == 3 && pad_bits == 32) {
 			// 3-byte sets are padded to 4 bytes
+			(void)util::load<stored_type>(stream);
+		}
+		return result;
+	}
+	
+	/*!
+	 * Finish a set that the compiler padded to padded_flags possible flags
+	 * (Inno Setup 6.7.0 and later pad some sets to 57 flags, 8 bytes).
+	 */
+	flag_type finalize(size_t padded_flags) {
+		while(bytes * stored_bits < padded_flags) {
+			bytes++;
 			(void)util::load<stored_type>(stream);
 		}
 		return result;

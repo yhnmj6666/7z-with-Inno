@@ -126,6 +126,8 @@ set(INNO_FORMAT_SOURCES
   src/inno/crypto/hasher.cpp
   src/inno/crypto/md5.cpp
   src/inno/crypto/sha1_crypto.cpp
+  src/inno/crypto/sha256.cpp
+  src/inno/crypto/xchacha20.cpp
   src/inno/loader/exereader.cpp
   src/inno/loader/offsets.cpp
   src/inno/setup/component.cpp

@@ -87,6 +87,12 @@ struct version {
 	//! \return true if the version stored might not be correct
 	bool is_ambiguous() const;
 	
+	/*!
+	 * \return true for an unknown version that is newer than all known setup data versions.
+	 *         The format of such versions cannot be guessed.
+	 */
+	bool is_newer_than_known() const;
+	
 	operator version_constant() const {
 		return value;
 	}

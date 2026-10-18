@@ -80,6 +80,8 @@ struct file_entry : public item {
 		SetNtfsCompression,
 		UnsetNtfsCompression,
 		GacInstall,
+		Download,
+		ExtractArchive,
 		
 		// obsolete options:
 		IsReadmeFile
@@ -99,6 +101,7 @@ struct file_entry : public item {
 	std::string destination;
 	std::string install_font_name;
 	std::string strong_assembly_name;
+	std::string excludes; // introduced in 6.5.0
 	
 	boost::uint32_t location; //!< index into the data entry list
 	boost::uint32_t attributes;
