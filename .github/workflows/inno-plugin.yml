@@ -8,8 +8,10 @@ name: Inno plugin
 #   client   the test client (GCC build) on the whole corpus
 #   wine     Windows 7-Zip 26.04 under Wine with the MinGW DLLs: 64-bit 7-Zip in
 #            groups of compilers, 32-bit 7-Zip on a subset of the compilers
-#   windows  MSVC x64 and Win32 builds, DLL checks, the MSVC test client and the
-#            official 7-Zip 26.04 (x64 and x86) on the whole corpus
+#   windows  one job per architecture (x64, Win32): the MSVC build, DLL checks,
+#            the MSVC test client and the official 7-Zip 26.04 of the same
+#            architecture on the whole corpus; the job msvc-dlls then puts both
+#            DLLs into one artifact, inno-plugin-msvc
 on:
   workflow_dispatch:
     inputs:
@@ -258,13 +260,26 @@ jobs:
             --compilers "${{ matrix.compilers }}" --sevenzip-dir "$dir" --sevenzip-plugin "$dll"
 
   windows:
-    name: Windows (MSVC, official 7-Zip)
+    name: Windows ${{ matrix.platform }} (MSVC, official ${{ matrix.bits }}-bit 7-Zip)
     needs: corpus
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64
+            bits: 64
+            sevenzip: 7z2604-x64.exe
+          - platform: Win32
+            bits: 32
+            sevenzip: 7z2604.exe
     defaults:
       run:
         shell: bash
+    env:
+      OUT: InnoPlugin/build/${{ matrix.platform }}/Release
+      DLL: Inno.${{ matrix.bits }}.dll
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -275,56 +290,49 @@ jobs:
           name: inno-corpus
           path: InnoPlugin/build/corpus
 
-      - name: Build with MSVC x64 Release
+      - name: Build with MSVC ${{ matrix.platform }} Release
         working-directory: InnoPlugin
         run: |
-          cmake -S . -B build/x64 -G "Visual Studio 17 2022" -A x64
-          cmake --build build/x64 --config Release --parallel
-
-      - name: Build with MSVC Win32 Release
-        working-directory: InnoPlugin
-        run: |
-          cmake -S . -B build/Win32 -G "Visual Studio 17 2022" -A Win32
-          cmake --build build/Win32 --config Release --parallel
+          cmake -S . -B build/${{ matrix.platform }} -G "Visual Studio 17 2022" -A ${{ matrix.platform }}
+          cmake --build build/${{ matrix.platform }} --config Release --parallel
 
       - name: Check DLL exports and imports (dumpbin; no VCRUNTIME, MSVCP or api-ms-win-crt)
-        run: >
-          python InnoPlugin/tests/check_dll.py --dumpbin auto
-          InnoPlugin/build/x64/Release/Inno.64.dll InnoPlugin/build/Win32/Release/Inno.32.dll
+        run: python InnoPlugin/tests/check_dll.py --dumpbin auto "$OUT/$DLL"
 
-      - name: Get the official 7-Zip 26.04 x64 and x86 (extracted, not installed)
+      - name: Get the official ${{ matrix.bits }}-bit 7-Zip 26.04 (extracted, not installed)
         run: |
-          get() {
-            curl -fsSL -o "InnoPlugin/build/$1" "$SEVENZIP_URL/$1"
-            echo "$2  InnoPlugin/build/$1" | sha256sum -c -
-            7z x -y "-oInnoPlugin/build/$3" "InnoPlugin/build/$1" > /dev/null
-            mkdir -p "InnoPlugin/build/$3/Formats"
-            cp "$4" "InnoPlugin/build/$3/Formats/"
-            ls "InnoPlugin/build/$3/Formats"
-          }
-          get 7z2604-x64.exe "$SEVENZIP_X64_SHA256" 7zip-x64 InnoPlugin/build/x64/Release/Inno.64.dll
-          get 7z2604.exe "$SEVENZIP_X86_SHA256" 7zip-x86 InnoPlugin/build/Win32/Release/Inno.32.dll
+          if [ "${{ matrix.bits }}" = 64 ]; then sha=$SEVENZIP_X64_SHA256; else sha=$SEVENZIP_X86_SHA256; fi
+          curl -fsSL -o "InnoPlugin/build/${{ matrix.sevenzip }}" "$SEVENZIP_URL/${{ matrix.sevenzip }}"
+          echo "$sha  InnoPlugin/build/${{ matrix.sevenzip }}" | sha256sum -c -
+          7z x -y -oInnoPlugin/build/7zip "InnoPlugin/build/${{ matrix.sevenzip }}" > /dev/null
+          mkdir -p InnoPlugin/build/7zip/Formats
+          cp "$OUT/$DLL" InnoPlugin/build/7zip/Formats/
+          ls InnoPlugin/build/7zip/Formats
 
-      - name: Tests (MSVC x64 test client, 64-bit 7-Zip with Inno.64.dll)
+      - name: Tests (MSVC ${{ matrix.platform }} test client, ${{ matrix.bits }}-bit 7-Zip with Inno.${{ matrix.bits }}.dll)
         run: >
           python InnoPlugin/tests/run_tests.py --no-compile
-          --client InnoPlugin/build/x64/Release/inno_client.exe
-          --plugin InnoPlugin/build/x64/Release/Inno.64.dll
-          --sevenzip-dir InnoPlugin/build/7zip-x64
+          --client "$OUT/inno_client.exe" --plugin "$OUT/$DLL"
+          --sevenzip-dir InnoPlugin/build/7zip
 
-      - name: Tests (MSVC Win32 test client, 32-bit 7-Zip with Inno.32.dll)
-        run: >
-          python InnoPlugin/tests/run_tests.py --no-compile
-          --client InnoPlugin/build/Win32/Release/inno_client.exe
-          --plugin InnoPlugin/build/Win32/Release/Inno.32.dll
-          --sevenzip-dir InnoPlugin/build/7zip-x86
-
-      - name: Upload the MSVC DLLs
+      - name: Upload the MSVC DLL
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: inno-plugin-msvc
-          path: |
-            InnoPlugin/build/x64/Release/Inno.64.dll
-            InnoPlugin/build/Win32/Release/Inno.32.dll
+          name: inno-plugin-msvc-${{ matrix.platform }}
+          path: ${{ env.OUT }}/${{ env.DLL }}
           if-no-files-found: error
+
+  msvc-dlls:
+    name: MSVC DLLs (artifact inno-plugin-msvc)
+    needs: windows
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Merge the DLLs of the windows jobs into one artifact
+        uses: actions/upload-artifact/merge@v7
+        with:
+          name: inno-plugin-msvc
+          pattern: inno-plugin-msvc-*
+          delete-merged: true

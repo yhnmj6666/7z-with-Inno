@@ -178,7 +178,8 @@ and a 7-Zip folder. See [tests/README.md](tests/README.md). The workflow
 runs) and builds with GCC and MinGW, then tests in parallel jobs: the test
 client, Windows 7-Zip 26.04 under Wine in groups of compilers (64-bit 7-Zip
 with all compilers, 32-bit 7-Zip with a subset), and on Windows the MSVC
-builds with the official 7-Zip 26.04 x64 and x86 on the whole corpus.
+x64 and Win32 builds, each with the official 7-Zip 26.04 of the same
+architecture on the whole corpus.
 
 ## Supported Inno Setup versions
 
