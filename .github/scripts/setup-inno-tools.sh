@@ -9,6 +9,7 @@
 #   innoextract-master    innoextract built from the pinned master commit below
 #   7zz                   7-Zip for Linux
 #   7z-win                Windows 7-Zip x64 under Wine; plugins go to $TOOLS/7zip-win64/Formats
+#   ISCrypt.dll           official ARCFOUR DLL in the folders of the compilers before 6.4 (Encryption=yes)
 #   /opt/src/{7zip,innoextract,issrc}   reference source checkouts with full history and tags
 set -euo pipefail
 
@@ -16,6 +17,8 @@ TOOLS=/opt/inno-tools
 SRC=/opt/src
 SEVENZIP_TAG=26.04
 INNOEXTRACT_COMMIT=6e9e34ed0876014fdb46e684103ef8c3605e382e
+ISCRYPT_URL=https://jrsoftware.org/download.php/iscrypt.dll
+ISCRYPT_SHA256=2f6294f9aa09f59a574b5dcd33be54e16b39377984f3d5658cda44950fa0f8fc
 
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
 export WINEDEBUG=-all
@@ -23,8 +26,8 @@ export WINEDLLOVERRIDES="mscoree,mshtml="
 
 # label|url|extra installer arguments
 ISCC_VERSIONS=(
-  "5.6.1|https://files.jrsoftware.org/is/5/innosetup-5.6.1.exe|/DOWNLOADISCRYPT=1"
-  "5.6.1-unicode|https://files.jrsoftware.org/is/5/innosetup-5.6.1-unicode.exe|/DOWNLOADISCRYPT=1"
+  "5.6.1|https://files.jrsoftware.org/is/5/innosetup-5.6.1.exe|"
+  "5.6.1-unicode|https://files.jrsoftware.org/is/5/innosetup-5.6.1-unicode.exe|"
   "6.0.5|https://github.com/jrsoftware/issrc/releases/download/is-6_0_5/innosetup-6.0.5.exe|"
   "6.1.2|https://github.com/jrsoftware/issrc/releases/download/is-6_1_2/innosetup-6.1.2.exe|"
   "6.2.2|https://github.com/jrsoftware/issrc/releases/download/is-6_2_2/innosetup-6.2.2.exe|"
@@ -115,22 +118,27 @@ step_iscc() {
   if [ ${#failed[@]} -gt 0 ]; then
     echo "::warning::Missing Inno Setup compilers: ${failed[*]}"
   fi
-  # Before 6.4, Encryption=yes needs ISCrypt.dll in the compiler folder. It is
-  # downloaded separately, so where it is missing the encrypted test installers
-  # use the ARCFOUR stand-in InnoPlugin/tests/iscrypt/iscrypt.c.
-  local stub=/tmp/ISCrypt.dll
-  if i686-w64-mingw32-gcc -O2 -shared -s -Wl,--kill-at -o "$stub" \
-       "$(dirname "$0")/../../InnoPlugin/tests/iscrypt/iscrypt.c"; then
-    for label in 5.6.1 5.6.1-unicode 6.0.5 6.1.2 6.2.2 6.3.3; do
-      local dir="$WINEPREFIX/drive_c/iscc/$label"
-      if [ -d "$dir" ] && [ ! -f "$dir/ISCrypt.dll" ]; then
-        cp "$stub" "$dir/ISCrypt.dll"
-        echo "ISCrypt.dll stand-in for iscc-$label"
-      fi
-    done
-  else
-    echo "::warning::Cannot build the ISCrypt.dll stand-in"
+  # Before 6.4, Encryption=yes needs ISCrypt.dll in the compiler folder. Install
+  # the official DLL, checked by its SHA-256; only if it cannot be downloaded,
+  # build the ARCFOUR stand-in InnoPlugin/tests/iscrypt/iscrypt.c instead.
+  local iscrypt=/tmp/ISCrypt.dll kind=official
+  if ! curl -fsSL -o "$iscrypt" "$ISCRYPT_URL" \
+      || [ "$(sha256sum "$iscrypt" | cut -d' ' -f1)" != "$ISCRYPT_SHA256" ]; then
+    echo "::warning::The official ISCrypt.dll is unavailable or changed, building the stand-in"
+    kind=stand-in
+    if ! i686-w64-mingw32-gcc -O2 -shared -s -Wl,--kill-at -o "$iscrypt" \
+         "$(dirname "$0")/../../InnoPlugin/tests/iscrypt/iscrypt.c"; then
+      echo "::warning::Cannot build the ISCrypt.dll stand-in"
+      return 0
+    fi
   fi
+  for label in 5.6.1 5.6.1-unicode 6.0.5 6.1.2 6.2.2 6.3.3; do
+    local dir="$WINEPREFIX/drive_c/iscc/$label"
+    if [ -d "$dir" ]; then
+      cp "$iscrypt" "$dir/ISCrypt.dll"
+      echo "ISCrypt.dll ($kind) for iscc-$label"
+    fi
+  done
 }
 
 step_sources() {

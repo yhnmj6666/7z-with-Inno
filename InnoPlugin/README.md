@@ -167,8 +167,10 @@ Tested so far:
 | 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2, 6.3.3, 6.4.3, 6.5.4, 6.6.1, 6.7.3, 7.0.2 (x64), 7.1.0 (x64 and x86) | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`; timestamps in UTC and local time; `Encryption=yes`, and `Encryption=full` from 6.5, with the right, a wrong and no password), every CI run |
 | 5.0.4 to 6.2.0 | 15 real installers, checked by the owner with the MSVC and MinGW builds: every file has the same content as with the old plugin, and `7z t` passes |
 
-The encrypted corpus installers of Inno Setup before 6.4 are compiled with a
-stand-in for `ISCrypt.dll` (`tests/iscrypt/iscrypt.c`, standard ARCFOUR).
+The encrypted corpus installers of Inno Setup before 6.4 are compiled with the
+official `ISCrypt.dll`, which `.github/scripts/setup-inno-tools.sh` downloads
+and checks by its SHA-256; where it cannot be downloaded, with a stand-in
+(`tests/iscrypt/iscrypt.c`, standard ARCFOUR).
 Disk-spanning installers are not supported yet.
 
 ## Known limitations

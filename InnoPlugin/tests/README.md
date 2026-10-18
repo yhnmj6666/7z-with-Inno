@@ -71,7 +71,8 @@ The runner:
    version is changed to `9.9.9.9` opens without items and with the error
    "Unsupported Inno Setup version". Before 6.4, `Encryption=yes` needs
    `ISCrypt.dll` in the compiler folder; `.github/scripts/setup-inno-tools.sh`
-   builds a stand-in from `iscrypt/iscrypt.c`, and without it these
+   installs the official DLL, checked by its SHA-256, or a stand-in built from
+   `iscrypt/iscrypt.c` when the download fails; without either, these
    installers are skipped.
 4. Windows 7-Zip, when a 7-Zip folder and a plugin DLL are given or found
    (default: `/opt/inno-tools/7zip-win64` and

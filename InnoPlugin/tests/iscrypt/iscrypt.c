@@ -8,9 +8,9 @@
 
      i686-w64-mingw32-gcc -O2 -shared -s -Wl,--kill-at -o ISCrypt.dll iscrypt.c
 
-   .github/scripts/setup-inno-tools.sh builds it into the folders of the
-   compilers that need it. ARCFOUR is the standard algorithm, so the
-   installers are the same as with the official DLL. */
+   .github/scripts/setup-inno-tools.sh installs the official DLL and builds
+   this stand-in only when the download fails. ARCFOUR is the standard
+   algorithm, so the encrypted data is the same as with the official DLL. */
 
 #include <stddef.h>
 
