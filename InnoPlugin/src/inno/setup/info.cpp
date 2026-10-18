@@ -51,7 +51,6 @@
 #include "../setup/type.hpp"
 #include "../stream/block.hpp"
 #include "../util/endian.hpp"
-#include "../util/fstream.hpp"
 #include "../util/load.hpp"
 #include "../util/log.hpp"
 #include "../util/output.hpp"

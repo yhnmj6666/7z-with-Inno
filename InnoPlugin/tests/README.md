@@ -29,7 +29,10 @@ The runner:
    encrypted variants (`ENCRYPTED_VARIANTS`: `encrypted.iss` with
    `Encryption=yes`, `encrypted-full.iss` with `Encryption=full` from 6.5,
    password `inno-test-password`), with
-   `TZ=UTC`, into `build/corpus/installers/<compiler>/<variant>.exe`. Each
+   `TZ=UTC`, into `build/corpus/installers/<compiler>/<variant>.exe`. The
+   disk-spanning variant (`SPANNED_VARIANTS`: `spanned.iss`, with
+   `DiskSliceSize` and the extra file `spanned/big.bin`) also writes the
+   slices `spanned-1.bin`, `spanned-2.bin`, ... (at least 3). Each
    installer has a `.key` file with a hash of the compiler name, the scripts
    and `make_payload.py`; an installer is compiled again only when its key
    changes. Installers are never committed.
@@ -37,7 +40,8 @@ The runner:
    `none.exe` with one bit flipped inside `data/random.bin` (`stored`),
    `lzma-solid.exe` with one byte changed in the middle of its solid chunk
    (`solid`), cut in the middle of that chunk (`truncated`), and cut inside
-   the setup headers (`headers`).
+   the setup headers (`headers`), and with a setup header block replaced by
+   one that decompresses to 1 GiB of zeros (`bomb`).
 3. Test client (`build/linux/inno_client` with `build/linux/Inno.so`): `i`,
    then for every installer:
    - `l`: the listing (below), the physical size equals the file size, no
@@ -54,12 +58,16 @@ The runner:
      the middle is deleted; `x -s` must extract only the deleted file and
      report all others as skipped.
 
-   Then the damaged copies: `truncated` and `headers` cannot be opened (exit
-   code 2); `stored` reports `crc_error` for `data/random.bin` only and
+   Then the damaged copies: `truncated`, `headers` and `bomb` cannot be
+   opened (exit code 2; for `bomb` the client must use less than 768 MiB of
+   memory); `stored` reports `crc_error` for `data/random.bin` only and
    extracts all other files byte-identically; `solid` reports errors for the
    damaged part of the chunk, and the files that are not affected still
    match. `payload/bin/calls.exe` (a PE file that is no installer) cannot be
-   opened.
+   opened. A copy of the spanned installer without its middle slice lists
+   all items with the warning `Missing slice: <name>`, extracts the files
+   before that slice byte-identically and reports the others as
+   `unavailable`.
 
    Then the encrypted installers: with the right password, `l` lists the
    expected items (the files with data are encrypted, the archive method
@@ -82,7 +90,7 @@ The runner:
    `l -slt` (type, physical size, listing, methods), `x` (the files, and the
    file times of the `time-*` variants), `t` and `x -aos` (skip existing
    files, as above). A renamed copy (`lzma-solid.bin`) must open as `Inno`.
-   The damaged copies: `truncated` and `headers` must not open as `Inno`
+   The damaged copies: `truncated`, `headers` and `bomb` must not open as `Inno`
    (7-Zip may open them as `PE`); `t` fails for `stored` and `solid`, and
    `x` of `stored` extracts all files except `data/random.bin`. Executables
    that are not Inno installers still open with 7-Zip's own handlers:
