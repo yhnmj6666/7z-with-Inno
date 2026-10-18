@@ -46,7 +46,10 @@ VARIANTS = {
     "none": "Copy",
     "time-utc": "LZMA2",
     "time-local": "LZMA2",
+    "spanned": "LZMA2",
 }
+# Disk-spanning variants: their data is in slice files next to the installer.
+SPANNED_VARIANTS = {"spanned"}
 # Encrypted variants -> first Inno Setup version that can compile them. They
 # are tested separately (test_encryption) because they need the password.
 # Before 6.4, Encryption=yes uses ARC4 from ISCrypt.dll, which the compiler
@@ -284,6 +287,15 @@ def encrypted_variants(compiler):
     return [v for v, first in ENCRYPTED_VARIANTS.items() if compiler_version(compiler) >= first]
 
 
+def slice_files(exe):
+    """The slice files of a disk-spanning installer: setup-1.bin, setup-2.bin, ..."""
+    folder, name = os.path.split(exe)
+    pattern = re.compile(re.escape(os.path.splitext(name)[0]) + r"-(\d+)\.bin$")
+    found = [(int(m.group(1)), n) for n in (os.listdir(folder) if os.path.isdir(folder) else [])
+             for m in [pattern.match(n)] if m]
+    return [os.path.join(folder, n) for _, n in sorted(found)]
+
+
 def build_corpus(args, results, encrypted=False):
     """Writes the payload, compiles (or reuses) the installers. Returns {(compiler, variant): exe}
     for VARIANTS, or with encrypted=True for ENCRYPTED_VARIANTS."""
@@ -327,7 +339,7 @@ def build_corpus(args, results, encrypted=False):
                 results.report("FAIL", name, "iscc-%s not found" % compiler)
                 continue
             os.makedirs(out_dir, exist_ok=True)
-            for f in (exe, key_file):
+            for f in [exe, key_file] + slice_files(exe):
                 if os.path.exists(f):
                     os.remove(f)
             # Installers store local times unless TimeStampsInUTC=yes; compile in UTC.
@@ -337,6 +349,8 @@ def build_corpus(args, results, encrypted=False):
             problems = exit_problem(code, (err + out)[-500:])
             if not problems and not os.path.isfile(exe):
                 problems.append("no output file")
+            if not problems and variant in SPANNED_VARIANTS and len(slice_files(exe)) < 3:
+                problems.append("%d slice files, expected at least 3" % len(slice_files(exe)))
             results.check(name, problems)
             if not problems:
                 with open(key_file, "w") as f:
@@ -745,6 +759,7 @@ def test_client(args, results, installers, expected, damaged, payload, env):
         results.check("client skip-existing %s" % tag, problems, "deleted %s" % deleted)
 
     test_client_damaged(args, results, client, installers, expected, damaged, payload)
+    test_client_missing_slice(args, results, client, installers, expected, payload)
 
 
 def test_client_damaged(args, results, client, installers, expected, damaged, payload):
@@ -793,6 +808,45 @@ def test_client_damaged(args, results, client, installers, expected, damaged, pa
     code, objs, problems = client.run("l", exe)
     problems += client_exit(code, objs, expected=2)
     results.check("client l payload/bin/calls.exe", problems, "not an installer")
+
+
+def test_client_missing_slice(args, results, client, installers, expected, payload):
+    """Disk spanning with a slice missing: the files with data in it or after
+    it in the same chunk are unavailable, the others are extracted."""
+    for (compiler, variant), exe in sorted(installers.items()):
+        if variant not in SPANNED_VARIANTS:
+            continue
+        name = "client missing slice %s/%s" % (compiler, variant)
+        slices = slice_files(exe)
+        missing = os.path.basename(slices[len(slices) // 2])
+        work = os.path.join(args.work_dir, "missing-slice", compiler)
+        shutil.rmtree(work, ignore_errors=True)
+        os.makedirs(work)
+        for f in [exe] + slices:
+            if os.path.basename(f) != missing:
+                shutil.copy2(f, work)
+        path = os.path.join(work, os.path.basename(exe))
+        exp = expected[(compiler, variant)]
+        code, objs, problems = client.run("l", path)
+        problems += client_exit(code, objs)
+        warning = (of_type(objs, "archive") or [{}])[0].get("warning", "")
+        if "Missing slice: %s" % missing not in warning:
+            problems.append("warning %r" % warning)
+        listed = {o["path"]: o.get("size") for o in of_type(objs, "item")}
+        out_dir = os.path.join(work, "out")
+        code, objs, x_problems = client.run("x", path, out_dir)
+        problems += x_problems + client_exit(code, objs, expected=4)
+        item_results = of_type(objs, "item_result")
+        bad = [o for o in item_results if o.get("result") != "ok"]
+        problems += ["%s: %s" % (o.get("path"), o.get("result")) for o in bad if o.get("result") != "unavailable"]
+        ok = sum(o.get("result") == "ok" and o.get("path") in exp.sources for o in item_results)
+        if not bad or not ok:
+            problems.append("%d files ok, %d unavailable" % (ok, len(bad)))
+        ends = of_type(objs, "extract_result")
+        if not ends or ends[0].get("hresult") != "0x00000000" or ends[0].get("completed") != ends[0].get("total"):
+            problems.append("extract_result %s" % (ends[:1],))
+        problems += compare_folder(out_dir, listed, exp.sources, payload, unchecked=[o.get("path") for o in bad])
+        results.check(name, problems, "without %s, %d files ok, %d unavailable" % (missing, ok, len(bad)))
 
 
 # ---------------------------------------------------------------------------

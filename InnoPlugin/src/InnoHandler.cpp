@@ -293,9 +293,16 @@ class CExtractor
     _failedPos = pos;
     _failedRes = res;
   }
-  Int32 GetDataErrorResult(const stream::chunk &chunk) const
+  // Result of a data error (res == S_FALSE) or of data that ends early.
+  Int32 GetReadErrorResult(const stream::chunk &chunk, HRESULT res) const
   {
-    return _arc.GetChunkEnd(chunk) > _arc.FileSize ?
+    if (_sliceStream && _sliceStream->MissingSlice)
+      return NExtract::NOperationResult::kUnavailable;
+    if (res != S_FALSE)
+      return NExtract::NOperationResult::kUnexpectedEnd;
+    const bool truncated = _sliceStream ? _sliceStream->Truncated :
+        _arc.GetChunkEnd(chunk) > _arc.FileSize;
+    return truncated ?
         NExtract::NOperationResult::kUnexpectedEnd :
         NExtract::NOperationResult::kDataError;
   }
@@ -305,12 +312,15 @@ class CExtractor
     return SetProgress();
   }
 
+  CMyComPtr<ISequentialInStream> _chunkStream;
+  CSliceInStream *_sliceStream;
+
 public:
   CChunkDecoder Decoder;
 
   CExtractor(const CInArchive &arc, IArchiveExtractCallback *callback):
       _arc(arc), _buf(kBufSize), _failed(false), _failedPos(0), _failedRes(0),
-      _unitStart(0), _unitPlanned(0), _unitProcessed(0)
+      _unitStart(0), _unitPlanned(0), _unitProcessed(0), _sliceStream(NULL)
   {
     _lpsSpec = new CLocalProgress;
     _lps = _lpsSpec;
@@ -347,7 +357,7 @@ public:
   {
     if (entry.file.size == 0)
       return -1;
-    if (_arc.Offsets.data_offset == 0)
+    if (!_arc.IsChunkStartAvailable(entry.chunk))
       return NExtract::NOperationResult::kUnavailable;
     if (entry.chunk.compression == stream::UnknownCompression)
       return NExtract::NOperationResult::kUnsupportedMethod;
@@ -374,12 +384,14 @@ HRESULT CExtractor::Decode(const setup::data_entry &entry, ISequentialOutStream 
     }
     if (!Decoder.IsOpen(chunk) || Decoder.GetPos() > file.offset)
     {
-      const HRESULT res = Decoder.Open(_arc.Stream, _arc.Offsets.data_offset, chunk, _arc.Key);
+      HRESULT res = _arc.OpenChunkStream(chunk, _chunkStream, &_sliceStream);
+      if (res == S_OK)
+        res = Decoder.Open(_chunkStream, chunk, _arc.Key);
       if (res != S_OK)
       {
         Decoder.Close();
         if (res == S_FALSE)
-          opRes = GetDataErrorResult(chunk);
+          opRes = GetReadErrorResult(chunk, res);
         else if (res == E_NOTIMPL)
           opRes = NExtract::NOperationResult::kUnsupportedMethod;
         else
@@ -400,7 +412,7 @@ HRESULT CExtractor::Decode(const setup::data_entry &entry, ISequentialOutStream 
       RINOK(AddProcessed(size))
       if (res == S_FALSE || size != requested)
       {
-        opRes = (res == S_FALSE) ? GetDataErrorResult(chunk) : (Int32)NExtract::NOperationResult::kUnexpectedEnd;
+        opRes = GetReadErrorResult(chunk, res);
         SetFailed(chunk, Decoder.GetPos(), opRes);
         Decoder.Close();
         return S_OK;
@@ -422,7 +434,7 @@ HRESULT CExtractor::Decode(const setup::data_entry &entry, ISequentialOutStream 
         return res;
       if (res == S_FALSE || size != requested)
       {
-        opRes = (res == S_FALSE) ? GetDataErrorResult(chunk) : (Int32)NExtract::NOperationResult::kUnexpectedEnd;
+        opRes = GetReadErrorResult(chunk, res);
         SetFailed(chunk, Decoder.GetPos(), opRes);
         Decoder.Close();
         if (outStream && size != 0)

@@ -19,6 +19,7 @@
 #include "inno/stream/chunk.hpp"
 
 #include <string>
+#include <vector>
 
 namespace NArchive {
 namespace NInno {
@@ -71,6 +72,34 @@ public:
   CXChaCha20InStream(ISequentialInStream *stream, const std::string &key, const stream::chunk &chunk);
 };
 
+// A slice file of a disk-spanning installer ("setup-1.bin"): a header of 8
+// bytes of magic and the size of the slice (32-bit, or 64-bit from Inno
+// Setup 6.5.2 on), then data up to that size.
+struct CSlice
+{
+  CMyComPtr<IInStream> Stream; // NULL if the slice is missing
+  UInt64 Size;                 // size from the slice header
+  unsigned HeaderSize;
+  CSlice(): Size(0), HeaderSize(0) {}
+};
+
+// Data of a disk-spanning installer from a position in a slice on: reading
+// continues after the header of the next slice at the end of each slice. The
+// data ends early at a missing or truncated slice.
+Z7_CLASS_IMP_NOQIB_1(
+  CSliceInStream
+  , ISequentialInStream
+)
+  const std::vector<CSlice> *_slices;
+  size_t _slice;
+  UInt64 _pos;
+public:
+  bool MissingSlice; // the data ended at a missing slice
+  bool Truncated;    // the data ended at the end of a slice file
+  CSliceInStream(const std::vector<CSlice> &slices, size_t slice, UInt64 pos):
+      _slices(&slices), _slice(slice), _pos(pos), MissingSlice(false), Truncated(false) {}
+};
+
 // Decompressed data of one chunk, read sequentially. Files are located by
 // their offset in the decompressed data: going forward skips data, going
 // backwards reopens the chunk.
@@ -95,12 +124,11 @@ public:
     { return _packSizeClosed + (_limitedSpec ? _limitedSpec->GetSize() : 0); }
   void Close();
 
-  // Opens the chunk stored at dataOffset + chunk.offset in stream. key is
+  // Opens the chunk that starts at the current position of stream. key is
   // the key of encrypted chunks (setup::info::get_key).
   // Returns S_FALSE if the chunk is damaged, E_NOTIMPL if its compression
   // or encryption method is not supported.
-  HRESULT Open(IInStream *stream, UInt64 dataOffset, const stream::chunk &chunk,
-      const std::string &key);
+  HRESULT Open(ISequentialInStream *stream, const stream::chunk &chunk, const std::string &key);
 
   // Reads up to size bytes; fewer only at the end of the data. Returns
   // S_FALSE on a data error. The decoder is closed after any error.

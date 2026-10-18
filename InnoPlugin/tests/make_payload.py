@@ -103,6 +103,8 @@ def files():
     ] + [("collide/%s" % name, ("collide/%s\n" % name).encode("ascii")) for name in COLLIDE_FILES] + [
         ("time/winter.txt", b"Modified in standard time.\n"),
         ("time/summer.txt", b"Modified in daylight saving time.\n"),
+        # Data for several slices of the disk-spanning variant.
+        ("spanned/big.bin", pseudo_random("big.bin", 6 * 1024 * 1024 + 321)),
     ]
 
 

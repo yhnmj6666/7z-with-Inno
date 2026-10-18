@@ -15,6 +15,10 @@ DefaultDirName={sd}\InnoPluginTest
 DisableProgramGroupPage=yes
 Compression={#Compression}
 SolidCompression={#Solid}
+#ifdef DiskSliceSize
+DiskSpanning=yes
+DiskSliceSize={#DiskSliceSize}
+#endif
 #ifdef Password
 Password={#Password}
 Encryption={#Encryption}
@@ -48,6 +52,10 @@ Source: "payload\bin\calls.exe"; DestDir: "{app}\bin"
 ; Names in Windows-1252 work in ANSI installers too; other names need a
 ; Unicode compiler.
 Source: "payload\latin1\*"; DestDir: "{app}\latin1"; Flags: recursesubdirs
+#ifdef DiskSliceSize
+; Data for several slices.
+Source: "payload\spanned\big.bin"; DestDir: "{app}\spanned"
+#endif
 #ifdef UNICODE
 Source: "payload\unicode\*"; DestDir: "{app}\unicode"; Flags: recursesubdirs
 #endif

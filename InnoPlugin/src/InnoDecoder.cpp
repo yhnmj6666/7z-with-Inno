@@ -231,6 +231,44 @@ Z7_COM7F_IMF(CXChaCha20InStream::Read(void *data, UInt32 size, UInt32 *processed
 }
 
 
+Z7_COM7F_IMF(CSliceInStream::Read(void *data, UInt32 size, UInt32 *processedSize))
+{
+  if (processedSize)
+    *processedSize = 0;
+  while (size != 0)
+  {
+    if (_slice >= _slices->size() || !(*_slices)[_slice].Stream)
+    {
+      MissingSlice = true;
+      return S_OK;
+    }
+    const CSlice &slice = (*_slices)[_slice];
+    if (_pos >= slice.Size)
+    {
+      _slice++;
+      if (_slice < _slices->size())
+        _pos = (*_slices)[_slice].HeaderSize;
+      continue;
+    }
+    // Every read seeks: chunks of other slices may have moved the stream.
+    RINOK(InStream_SeekSet(slice.Stream, _pos))
+    const UInt64 rem = slice.Size - _pos;
+    UInt32 cur = (rem < size) ? (UInt32)rem : size;
+    RINOK(slice.Stream->Read(data, cur, &cur))
+    if (cur == 0)
+    {
+      Truncated = true;
+      return S_OK;
+    }
+    _pos += cur;
+    if (processedSize)
+      *processedSize = cur;
+    return S_OK;
+  }
+  return S_OK;
+}
+
+
 void CChunkDecoder::Close()
 {
   _isOpen = false;
@@ -244,12 +282,11 @@ void CChunkDecoder::Close()
   _pos = 0;
 }
 
-HRESULT CChunkDecoder::Open(IInStream *stream, UInt64 dataOffset, const stream::chunk &chunk,
+HRESULT CChunkDecoder::Open(ISequentialInStream *stream, const stream::chunk &chunk,
     const std::string &key)
 {
   Close();
 
-  RINOK(InStream_SeekSet(stream, dataOffset + chunk.offset))
   Byte magic[sizeof(kChunkMagic)];
   RINOK(ReadStream_FALSE(stream, magic, sizeof(magic)))
   if (memcmp(magic, kChunkMagic, sizeof(magic)) != 0)
