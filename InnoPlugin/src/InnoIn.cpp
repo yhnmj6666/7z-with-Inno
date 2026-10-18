@@ -97,6 +97,8 @@ void CInArchive::Clear()
   PhySize = 0;
   Offsets = loader::offsets();
   Info = setup::info();
+  // Not set by the constructor; read by kpidHeadersSize.
+  Info.header.header_size = 0;
   Items.clear();
   Extras.clear();
   Warnings.clear();
@@ -117,8 +119,28 @@ void CInArchive::SetError(UInt32 flags, const std::string &message)
     ErrorMessage = message;
 }
 
+// The PBKDF2 iteration count comes from the installer, so it is limited like
+// in the 7z and RAR5 handlers of 7-Zip (2^24). Inno Setup uses 220000.
+static const UInt32 kMaxKdfIterations = (UInt32)1 << 24;
+
+UInt32 CInArchive::GetKdfIterations() const
+{
+  const std::string &salt = Info.header.password_salt;
+  if (Info.header.password.type != crypto::PBKDF2_SHA256_XChaCha20 || salt.size() < 20)
+    return 0;
+  const unsigned char *p = (const unsigned char *)salt.data() + 16;
+  return (UInt32)p[0] | ((UInt32)p[1] << 8) | ((UInt32)p[2] << 16) | ((UInt32)p[3] << 24);
+}
+
+bool CInArchive::IsKdfSupported() const
+{
+  return GetKdfIterations() <= kMaxKdfIterations;
+}
+
 bool CInArchive::SetPassword(const UString &password)
 {
+  if (!IsKdfSupported())
+    return false;
   AString utf8;
   ConvertUnicodeToUTF8(password, utf8);
   std::string key;
@@ -675,13 +697,22 @@ HRESULT CInArchive::Open(IInStream *stream, IArchiveOpenCallback *callback)
       else if (Info.encryption == setup::info::EncryptionFull)
       {
         // The setup headers are encrypted (Encryption=full, 6.5+).
-        callbackRes = GetPassword(callback);
-        if (callbackRes == S_OK)
+        if (!IsKdfSupported())
         {
-          if (KeyDefined)
-            Info.load_headers(is, setup::info::entry_types::all(), 0, Key);
-          else
-            SetError(kpv_ErrorFlags_EncryptedHeadersError, std::string());
+          std::ostringstream oss;
+          oss << "Unsupported key derivation: " << GetKdfIterations() << " PBKDF2 iterations";
+          SetError(kpv_ErrorFlags_UnsupportedFeature, oss.str());
+        }
+        else
+        {
+          callbackRes = GetPassword(callback);
+          if (callbackRes == S_OK)
+          {
+            if (KeyDefined)
+              Info.load_headers(is, setup::info::entry_types::all(), 0, Key);
+            else
+              SetError(kpv_ErrorFlags_EncryptedHeadersError, std::string());
+          }
         }
       }
       else

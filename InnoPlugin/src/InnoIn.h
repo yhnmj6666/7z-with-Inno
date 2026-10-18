@@ -80,6 +80,11 @@ public:
   HRESULT GetPassword(IUnknown *callback);
   // Sets Key if password is the password of the installer.
   bool SetPassword(const UString &password);
+  // PBKDF2 iteration count of the password (0 if there is none).
+  UInt32 GetKdfIterations() const;
+  // False if the installer asks for more PBKDF2 iterations than the plugin
+  // does for one password.
+  bool IsKdfSupported() const;
 
   const setup::data_entry &GetDataEntry(const CItem &item) const
     { return Info.data_entries[Info.files[(size_t)item.FileIndex].location]; }

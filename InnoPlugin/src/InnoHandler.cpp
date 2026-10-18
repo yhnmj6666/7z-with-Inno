@@ -211,7 +211,7 @@ Z7_COM7F_IMF(CHandler::GetArchiveProperty(PROPID propID, PROPVARIANT *value))
           prop = _arc.PhySize;
         break;
       case kpidHeadersSize:
-        if (_arc.Stream)
+        if (_arc.Stream && _arc.ErrorFlags == 0)
           prop = (UInt64)_arc.Info.header.header_size;
         break;
       case kpidComment:
@@ -554,13 +554,18 @@ HRESULT CHandler::Extract2(const UInt32 *indices, UInt32 numItems, bool testMode
     if (staticRes < 0 && entry.file.size != 0 && entry.chunk.encryption != stream::Plaintext
         && !_arc.KeyDefined)
     {
-      if (!passwordRequested)
+      if (!_arc.IsKdfSupported())
+        staticRes = NExtract::NOperationResult::kUnsupportedMethod;
+      else
       {
-        passwordRequested = true;
-        RINOK(_arc.GetPassword(extractCallback))
+        if (!passwordRequested)
+        {
+          passwordRequested = true;
+          RINOK(_arc.GetPassword(extractCallback))
+        }
+        if (!_arc.KeyDefined)
+          staticRes = NExtract::NOperationResult::kWrongPassword;
       }
-      if (!_arc.KeyDefined)
-        staticRes = NExtract::NOperationResult::kWrongPassword;
     }
     bool haveResult = false;
     bool cacheValid = false;
