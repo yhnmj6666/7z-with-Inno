@@ -10,7 +10,7 @@
 
 ## Running the tests
 
-On Linux, in the agent environment or the CI job (see
+On Linux, in the agent environment or the CI jobs (see
 `.github/scripts/setup-inno-tools.sh` for the `iscc-<version>` wrappers and
 Windows 7-Zip under Wine), build with GCC and MinGW x86_64 as described in
 `../README.md`, then run from the repository root:

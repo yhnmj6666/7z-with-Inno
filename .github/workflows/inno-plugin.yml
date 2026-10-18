@@ -88,6 +88,8 @@ jobs:
           wine cmd /c exit > /dev/null 2>&1
           python3 InnoPlugin/tests/run_tests.py --compile-only
 
+      # A cache entry is never replaced: when the key exists already (a run with
+      # fresh-corpus), the save only warns. Delete an entry with gh cache delete.
       - name: Save the corpus cache
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
