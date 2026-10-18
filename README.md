@@ -1,9 +1,31 @@
-# Git archive of 7-zip releases
+# Inno Setup plugin for 7-Zip
 
-Because 7-zip [doesn't](https://github.com/7z) have a public repository, and their code is released only as archives on SourceForge, I maintain a git-ified copy here.
+A format plugin that lets stock 7-Zip (7z.exe, 7zG.exe, 7zFM.exe) open, list,
+test and extract Inno Setup installers, including encrypted and disk-spanning
+ones: copy `Inno.64.dll` (64-bit 7-Zip) or `Inno.32.dll` (32-bit 7-Zip) into
+the `Formats` folder of 7-Zip. Installation, building, testing, the supported
+Inno Setup versions and the known limitations are described in
+[`InnoPlugin/README.md`](InnoPlugin/README.md).
 
-The [tagged releases](https://github.com/pornel/7z/releases) and the [original branch](https://github.com/pornel/7z/tree/original) contain pure 7-zip releases, without any modifications like this readme.
+## Repository layout
 
-## Inno Setup plugin
+| Path | Contents |
+|---|---|
+| [`InnoPlugin/`](InnoPlugin/) | the plugin: sources, CMake build, vendored 7-Zip 26.04 subset, tests |
+| [`.github/workflows/inno-plugin.yml`](.github/workflows/inno-plugin.yml) | CI: builds with GCC, MinGW and MSVC, tests under Wine and on Windows |
+| [`.github/`](.github/) | the environment and the brief of the GitHub Copilot cloud agent |
 
-[`InnoPlugin/`](InnoPlugin/README.md) holds a format plugin for stock 7-Zip that opens, lists, tests and extracts Inno Setup installers: copy `Inno.64.dll` or `Inno.32.dll` into the `Formats` folder of 7-Zip. Building, installing, supported Inno Setup versions and known limitations are described in [`InnoPlugin/README.md`](InnoPlugin/README.md).
+## History
+
+This repository started as a fork of
+[kornelski/7z](https://github.com/kornelski/7z), a git archive of 7-Zip
+releases, and the first version of the plugin was built inside its 7-Zip 22.00
+source tree. The plugin now builds on its own, so the 7-Zip sources were
+removed; the release tags (`15.05` to `22.00`) and the earlier commits keep
+them.
+
+## License
+
+GNU LGPL 2.1 or later (see [`COPYING`](COPYING)), with parts under the zlib
+license (code derived from innoextract) and the Boost Software License; see
+the License section of [`InnoPlugin/README.md`](InnoPlugin/README.md).

@@ -8,7 +8,7 @@ The plugin builds from this folder alone: the Inno Setup format code derived
 from innoextract, a vendored subset of 7-Zip 26.04 for the 7-Zip interfaces,
 streams and decoders, and a CMake build for MSVC, GCC and MinGW. It replaces
 the older plugin that was built inside a 7-Zip 22.00 source tree in this
-repository (rewritten as described in
+repository's history (rewritten as described in
 `.github/prompts/inno-plugin-refactor.prompt.md`). See
 [Known limitations](#known-limitations).
 
