@@ -173,13 +173,10 @@ Handler GUIDs:
   0C xz
   0D ppmd
 
-  70 Inno
-  
   C0 AVB
   C1 LP
   C2 Sparse
   C3 APFS
-
   C4 Vhdx
   C5 Base64
   C6 COFF
