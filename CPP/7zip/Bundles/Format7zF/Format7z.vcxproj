@@ -292,12 +292,6 @@
       <OutputFile>.\Debug/Format7z.bsc</OutputFile>
     </Bscmake>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup>
-    <Link>
-      <!-- liblzma itself is selected with #pragma comment(lib) in Inno\InnoExtract\stream\lzma.cpp. -->
-      <AdditionalLibraryDirectories>..\..\Archive\Inno\InnoExtract\liblzma\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-    </Link>
-  </ItemDefinitionGroup>
   <ItemGroup>
     <None Include="..\..\..\..\Asm\x86\7zAsm.asm" />
     <CustomBuild Include="..\..\..\..\Asm\x86\7zCrcOpt.asm">
@@ -861,54 +855,6 @@
     <ClCompile Include="..\..\Archive\HandlerCont.cpp" />
     <ClCompile Include="..\..\Archive\HfsHandler.cpp" />
     <ClCompile Include="..\..\Archive\IhexHandler.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoDecode.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\crypto\adler32.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\crypto\arc4.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\crypto\checksum.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\crypto\crc32.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\crypto\hasher.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\crypto\md5.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\crypto\sha1_crypto.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\loader\exereader.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\loader\offsets.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\minihead.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\minihead_iostreams.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\component.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\data.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\delete.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\directory.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\file_setup.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\header.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\icon.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\info.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\ini.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\item.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\language.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\message.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\permission.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\registry.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\run.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\task.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\type.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\version.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\setup\windows_setup.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\stream\block.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\stream\chunk.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\stream\file_stream.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\stream\lzma.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\stream\slice.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\util\console.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\util\encoding.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\util\load.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\util\log.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\util\time.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoExtract\util\windows_util.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoHandler.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoIn.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoInterop.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoItem.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoRegister.cpp" />
-    <ClCompile Include="..\..\Archive\Inno\InnoUtils.cpp" />
     <ClCompile Include="..\..\Archive\Iso\IsoHandler.cpp" />
     <ClCompile Include="..\..\Archive\Iso\IsoHeader.cpp" />
     <ClCompile Include="..\..\Archive\Iso\IsoIn.cpp" />
@@ -1450,68 +1396,6 @@
     <ClInclude Include="..\..\Archive\DeflateProps.h" />
     <ClInclude Include="..\..\Archive\HandlerCont.h" />
     <ClInclude Include="..\..\Archive\IArchive.h" />
-    <ClInclude Include="..\..\Archive\Inno\InnoDecode.h" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\crypto\adler32.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\crypto\arc4.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\crypto\checksum.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\crypto\crc32.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\crypto\hasher.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\crypto\iteratedhash.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\crypto\md5.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\crypto\sha1.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\lib\magic_enum.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\loader\exereader.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\loader\offsets.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\minihead.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\minihead_iostreams.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\component.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\data.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\delete.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\directory.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\file.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\header.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\icon.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\info.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\ini.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\item.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\language.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\message.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\permission.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\registry.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\run.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\task.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\type.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\version.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\setup\windows.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\stream\block.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\stream\checksum.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\stream\chunk.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\stream\exefilter.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\stream\file.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\stream\lzma.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\stream\restrict.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\stream\slice.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\ansi.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\console.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\encoding.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\endian.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\enum.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\flags.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\fstream.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\load.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\log.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\math.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\output.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\storedenum.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\time.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\types.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\unique_ptr.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoExtract\util\windows.hpp" />
-    <ClInclude Include="..\..\Archive\Inno\InnoHandler.h" />
-    <ClInclude Include="..\..\Archive\Inno\InnoIn.h" />
-    <ClInclude Include="..\..\Archive\Inno\InnoInterop.h" />
-    <ClInclude Include="..\..\Archive\Inno\InnoItem.h" />
-    <ClInclude Include="..\..\Archive\Inno\InnoUtils.h" />
     <ClInclude Include="..\..\Archive\Iso\IsoHandler.h" />
     <ClInclude Include="..\..\Archive\Iso\IsoHeader.h" />
     <ClInclude Include="..\..\Archive\Iso\IsoIn.h" />

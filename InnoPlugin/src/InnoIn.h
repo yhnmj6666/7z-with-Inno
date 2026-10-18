@@ -8,6 +8,8 @@
 #include "CPP/7zip/IStream.h"
 #include "CPP/7zip/Archive/IArchive.h"
 
+#include "InnoDecoder.h"
+
 #include "inno/loader/offsets.hpp"
 #include "inno/setup/data.hpp"
 #include "inno/setup/file.hpp"
@@ -44,6 +46,7 @@ class CInArchive
   void BuildItems();
   void ComputeSizes(const Byte *peHeaders, size_t peHeadersSize);
   void SetError(UInt32 flags, const std::string &message);
+  HRESULT OpenSlices(IArchiveOpenCallback *callback);
 
 public:
   CMyComPtr<IInStream> Stream;
@@ -66,6 +69,9 @@ public:
   // Checked key of the password (setup::info::get_key).
   std::string Key;
   bool KeyDefined;
+  // The slice files of a disk-spanning installer (Offsets.data_offset == 0),
+  // opened through IArchiveOpenVolumeCallback.
+  std::vector<CSlice> Slices;
 
   CInArchive(): FileSize(0), PhySize(0), IsSolid(false), ErrorFlags(0), KeyDefined(false) {}
 
@@ -90,6 +96,15 @@ public:
     { return Info.data_entries[Info.files[(size_t)item.FileIndex].location]; }
   // Position of the end of the stored chunk in the installer.
   UInt64 GetChunkEnd(const stream::chunk &chunk) const;
+  bool IsSpanned() const { return Offsets.data_offset == 0; }
+  // False if the slice with the start of the chunk is missing. A later
+  // missing slice is found while reading (CSliceInStream::MissingSlice):
+  // the files of a solid chunk before it can still be extracted.
+  bool IsChunkStartAvailable(const stream::chunk &chunk) const;
+  // Returns a stream at the start of the chunk. sliceStream is set for
+  // disk-spanning installers.
+  HRESULT OpenChunkStream(const stream::chunk &chunk, CMyComPtr<ISequentialInStream> &stream,
+      CSliceInStream **sliceStream) const;
 };
 
 // Compression method, filter and encryption of a data entry, e.g. "LZMA2 IF5309".

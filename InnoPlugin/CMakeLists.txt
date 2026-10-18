@@ -158,9 +158,6 @@ set(INNO_FORMAT_SOURCES
   src/inno/util/log.cpp
   src/inno/util/time.cpp
 )
-if(WIN32)
-  list(APPEND INNO_FORMAT_SOURCES src/inno/util/windows_util.cpp)
-endif()
 
 # The plugin.
 add_library(Inno SHARED

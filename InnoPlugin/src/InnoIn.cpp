@@ -5,9 +5,12 @@
 #include <string.h>
 
 #include "CPP/Common/UTFConvert.h"
+#include "CPP/Windows/PropVariant.h"
 #include "CPP/7zip/IPassword.h"
 #include "CPP/7zip/Archive/IArchive.h"
 #include "CPP/7zip/Common/StreamUtils.h"
+
+#include "C/CpuArch.h"
 
 #include "InnoIn.h"
 #include "InnoInterop.h"
@@ -110,6 +113,7 @@ void CInArchive::Clear()
   ErrorMessage.clear();
   Key.clear();
   KeyDefined = false;
+  Slices.clear();
 }
 
 void CInArchive::SetError(UInt32 flags, const std::string &message)
@@ -183,6 +187,155 @@ UInt64 CInArchive::GetChunkEnd(const stream::chunk &chunk) const
       + (HasSalt(chunk) ? kChunkSaltSize : 0) + chunk.size;
 }
 
+bool CInArchive::IsChunkStartAvailable(const stream::chunk &chunk) const
+{
+  if (!IsSpanned())
+    return true;
+  return chunk.first_slice < Slices.size() && Slices[chunk.first_slice].Stream;
+}
+
+HRESULT CInArchive::OpenChunkStream(const stream::chunk &chunk,
+    CMyComPtr<ISequentialInStream> &stream, CSliceInStream **sliceStream) const
+{
+  *sliceStream = NULL;
+  if (!IsSpanned())
+  {
+    RINOK(InStream_SeekSet(Stream, (UInt64)Offsets.data_offset + chunk.offset))
+    stream = Stream;
+    return S_OK;
+  }
+  CSliceInStream *spec = new CSliceInStream(Slices, chunk.first_slice, chunk.offset);
+  stream = spec;
+  *sliceStream = spec;
+  return S_OK;
+}
+
+// Name of a slice as in innoextract stream/slice.cpp: "setup-1.bin",
+// "setup-2.bin", ... or with several slices per disk "setup-1a.bin",
+// "setup-1b.bin", ...
+static UString GetSliceName(const UString &base, size_t slice, size_t slicesPerDisk)
+{
+  UString name = base;
+  name.Add_Minus();
+  if (slicesPerDisk <= 1)
+    name.Add_UInt64(slice + 1);
+  else
+  {
+    name.Add_UInt64(slice / slicesPerDisk + 1);
+    name += (wchar_t)(L'a' + slice % slicesPerDisk);
+  }
+  name += ".bin";
+  return name;
+}
+
+// Magic of the slice files; "idskb32" (6.5.2+) has a 64-bit size.
+static const Byte kSliceMagic[3][8] =
+{
+  { 'i', 'd', 's', 'k', 'a', '1', '6', 0x1a },
+  { 'i', 'd', 's', 'k', 'a', '3', '2', 0x1a },
+  { 'i', 'd', 's', 'k', 'b', '3', '2', 0x1a }
+};
+
+HRESULT CInArchive::OpenSlices(IArchiveOpenCallback *callback)
+{
+  size_t numSlices = 0;
+  for (size_t i = 0; i < Info.data_entries.size(); i++)
+  {
+    const setup::data_entry &entry = Info.data_entries[i];
+    if (entry.file.size != 0 && numSlices < (size_t)entry.chunk.last_slice + 1)
+      numSlices = (size_t)entry.chunk.last_slice + 1;
+  }
+  // The slices per disk is at most 26 ("a" to "z"). Damaged headers can
+  // give any slice number: more than 65536 slices (16 GiB with the smallest
+  // DiskSliceSize) are not looked up, so their files are unavailable.
+  const size_t kMaxSlices = (size_t)1 << 16;
+  const size_t slicesPerDisk = Info.header.slices_per_disk;
+  if (numSlices == 0 || slicesPerDisk > 26)
+    return S_OK;
+  if (numSlices > kMaxSlices)
+  {
+    Warnings.push_back("Too many slices");
+    return S_OK;
+  }
+
+  CMyComPtr<IArchiveOpenVolumeCallback> volumeCallback;
+  if (callback)
+    callback->QueryInterface(IID_IArchiveOpenVolumeCallback, (void **)&volumeCallback);
+  // The slices are named after the installer, or before 4.1.7 after the
+  // name stored in the headers.
+  UString base, base2;
+  if (volumeCallback)
+  {
+    NWindows::NCOM::CPropVariant prop;
+    RINOK(volumeCallback->GetProperty(kpidName, &prop))
+    if (prop.vt == VT_BSTR)
+    {
+      base = prop.bstrVal;
+      const int dot = base.ReverseFind_Dot();
+      if (dot > 0)
+        base.DeleteFrom((unsigned)dot);
+    }
+  }
+  Utf8ToUnicode(Info.header.base_filename, base2);
+  base2.Replace(L'/', L'_');
+  base2.Replace(L'\\', L'_');
+  if (Info.version < INNO_VERSION(4, 1, 7) && !base2.IsEmpty())
+    std::swap(base, base2);
+
+  Slices.resize(numSlices);
+  const size_t kMaxMissingWarnings = 8;
+  size_t numMissing = 0;
+  for (size_t i = 0; i < numSlices; i++)
+  {
+    UString names[2];
+    names[0] = base.IsEmpty() ? UString() : GetSliceName(base, i, slicesPerDisk);
+    names[1] = base2.IsEmpty() ? UString() : GetSliceName(base2, i, slicesPerDisk);
+    for (unsigned k = 0; k < 2 && volumeCallback && !Slices[i].Stream; k++)
+    {
+      if (names[k].IsEmpty() || (k == 1 && names[1] == names[0]))
+        continue;
+      CMyComPtr<IInStream> stream;
+      const HRESULT res = volumeCallback->GetStream(names[k], &stream);
+      if (res == S_FALSE || !stream)
+        continue;
+      RINOK(res)
+      Byte header[16];
+      UInt64 fileSize = 0;
+      RINOK(InStream_GetSize_SeekToEnd(stream, fileSize))
+      RINOK(InStream_SeekToBegin(stream))
+      size_t processed = sizeof(header);
+      RINOK(ReadStream(stream, header, &processed))
+      unsigned magic = 0;
+      while (magic < Z7_ARRAY_SIZE(kSliceMagic) && (processed < 8 || memcmp(header, kSliceMagic[magic], 8) != 0))
+        magic++;
+      const unsigned headerSize = (magic == 2) ? 16 : 12;
+      const UInt64 size = (magic == 2) ? GetUi64(header + 8) : GetUi32(header + 8);
+      if (magic == Z7_ARRAY_SIZE(kSliceMagic) || processed < headerSize
+          || size < headerSize || size > fileSize)
+      {
+        AString name;
+        ConvertUnicodeToUTF8(names[k], name);
+        Warnings.push_back(std::string("Bad slice header: ") + name.Ptr());
+        continue;
+      }
+      Slices[i].Stream = stream;
+      Slices[i].Size = size;
+      Slices[i].HeaderSize = headerSize;
+    }
+    if (!Slices[i].Stream && ++numMissing <= kMaxMissingWarnings)
+    {
+      AString name;
+      ConvertUnicodeToUTF8(names[base.IsEmpty() ? 1 : 0], name);
+      Warnings.push_back(std::string("Missing slice: ") + name.Ptr());
+    }
+  }
+  if (numMissing > kMaxMissingWarnings)
+  {
+    Warnings.push_back("Missing slices: " + std::to_string(numMissing - kMaxMissingWarnings) + " more");
+  }
+  return S_OK;
+}
+
 void CInArchive::AddExtraFile(const std::string &name, const std::string *stored)
 {
   CExtraFile extra;
@@ -194,6 +347,16 @@ void CInArchive::AddExtraFile(const std::string &name, const std::string *stored
 static const char *GetTextExtension(const std::string &text)
 {
   return (text.compare(0, 5, "{\\rtf") == 0) ? ".rtf" : ".txt";
+}
+
+// Inno Setup 6.6 and later also store PNG images.
+static const char *GetImageExtension(const std::string &image)
+{
+  if (image.compare(0, 8, "\x89PNG\r\n\x1a\n") == 0)
+    return ".png";
+  if (image.compare(0, 2, "BM") == 0)
+    return ".bmp";
+  return ".bin";
 }
 
 void CInArchive::BuildExtraFiles()
@@ -214,17 +377,28 @@ void CInArchive::BuildExtraFiles()
     if (!lang.license_text.empty())
       AddExtraFile(lang.name + GetTextExtension(lang.license_text), &lang.license_text);
   }
-  for (size_t i = 0; i < Info.wizard_images.size(); i++)
+  const struct
   {
-    std::ostringstream name;
-    name << "WizardImage" << i << ".bmp";
-    AddExtraFile(name.str(), &Info.wizard_images[i]);
-  }
-  for (size_t i = 0; i < Info.wizard_images_small.size(); i++)
+    const char *Name;
+    const std::vector<std::string> *Images;
+  } imageSets[] =
   {
-    std::ostringstream name;
-    name << "WizardImageSmall" << i << ".bmp";
-    AddExtraFile(name.str(), &Info.wizard_images_small[i]);
+    { "WizardImage", &Info.wizard_images },
+    { "WizardImageSmall", &Info.wizard_images_small },
+    { "WizardImageBack", &Info.wizard_images_back },
+    { "WizardImageDark", &Info.wizard_images_dark },
+    { "WizardImageSmallDark", &Info.wizard_images_small_dark },
+    { "WizardImageBackDark", &Info.wizard_images_back_dark }
+  };
+  for (size_t k = 0; k < Z7_ARRAY_SIZE(imageSets); k++)
+  {
+    const std::vector<std::string> &images = *imageSets[k].Images;
+    for (size_t i = 0; i < images.size(); i++)
+    {
+      std::ostringstream name;
+      name << imageSets[k].Name << i << GetImageExtension(images[i]);
+      AddExtraFile(name.str(), &images[i]);
+    }
   }
 }
 
@@ -762,6 +936,10 @@ HRESULT CInArchive::Open(IInStream *stream, IArchiveOpenCallback *callback)
   {
     BuildExtraFiles();
     BuildItems();
+    if (IsSpanned())
+    {
+      RINOK(OpenSlices(callback))
+    }
   }
   ComputeSizes(peHeaders, peSize);
 

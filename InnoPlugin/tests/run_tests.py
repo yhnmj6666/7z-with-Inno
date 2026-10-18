@@ -10,13 +10,17 @@ summary; the exit code is 0 only if nothing failed.
 """
 
 import argparse
+import functools
 import hashlib
 import json
+import lzma
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
+import zlib
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_DIR = os.path.dirname(TESTS_DIR)
@@ -42,7 +46,10 @@ VARIANTS = {
     "none": "Copy",
     "time-utc": "LZMA2",
     "time-local": "LZMA2",
+    "spanned": "LZMA2",
 }
+# Disk-spanning variants: their data is in slice files next to the installer.
+SPANNED_VARIANTS = {"spanned"}
 # Encrypted variants -> first Inno Setup version that can compile them. They
 # are tested separately (test_encryption) because they need the password.
 # Before 6.4, Encryption=yes uses ARC4 from ISCrypt.dll, which the compiler
@@ -65,7 +72,9 @@ TIMEOUT = 600
 INCORRECT_CHARS = re.compile(r'[\x00-\x1f:*?<>|"]')
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 # Extra items whose number depends on the compiler (wizard images).
-OPTIONAL_EXTRA = re.compile(r"embedded\\WizardImage(Small)?\d+\.bmp$")
+OPTIONAL_EXTRA = re.compile(r"embedded\\WizardImage(Small|Back)?(Dark)?\d+\.(bmp|png)$")
+# The wizard images are named by their content.
+IMAGE_MAGIC = {"bmp": b"BM", "png": b"\x89PNG\r\n\x1a\n"}
 # Inno Setup [Files] parameters: Name: "value" or Name: value.
 PARAMETER = re.compile(r'(\w+)\s*:\s*(?:"([^"]*)"|([^;]*))')
 # The client's item results for damaged data.
@@ -278,6 +287,15 @@ def encrypted_variants(compiler):
     return [v for v, first in ENCRYPTED_VARIANTS.items() if compiler_version(compiler) >= first]
 
 
+def slice_files(exe):
+    """The slice files of a disk-spanning installer: setup-1.bin, setup-2.bin, ..."""
+    folder, name = os.path.split(exe)
+    pattern = re.compile(re.escape(os.path.splitext(name)[0]) + r"-(\d+)\.bin$")
+    found = [(int(m.group(1)), n) for n in (os.listdir(folder) if os.path.isdir(folder) else [])
+             for m in [pattern.match(n)] if m]
+    return [os.path.join(folder, n) for _, n in sorted(found)]
+
+
 def build_corpus(args, results, encrypted=False):
     """Writes the payload, compiles (or reuses) the installers. Returns {(compiler, variant): exe}
     for VARIANTS, or with encrypted=True for ENCRYPTED_VARIANTS."""
@@ -321,7 +339,7 @@ def build_corpus(args, results, encrypted=False):
                 results.report("FAIL", name, "iscc-%s not found" % compiler)
                 continue
             os.makedirs(out_dir, exist_ok=True)
-            for f in (exe, key_file):
+            for f in [exe, key_file] + slice_files(exe):
                 if os.path.exists(f):
                     os.remove(f)
             # Installers store local times unless TimeStampsInUTC=yes; compile in UTC.
@@ -331,12 +349,44 @@ def build_corpus(args, results, encrypted=False):
             problems = exit_problem(code, (err + out)[-500:])
             if not problems and not os.path.isfile(exe):
                 problems.append("no output file")
+            if not problems and variant in SPANNED_VARIANTS and len(slice_files(exe)) < 3:
+                problems.append("%d slice files, expected at least 3" % len(slice_files(exe)))
             results.check(name, problems)
             if not problems:
                 with open(key_file, "w") as f:
                     f.write(key + "\n")
                 installers[(compiler, variant)] = exe
     return installers
+
+
+# Uncompressed size of the setup header block of the "bomb" copies, beyond
+# the limit of the plugin (256 MiB).
+BOMB_SIZE = 1 << 30
+# Kinds of damaged copies that cannot be opened.
+DECLINED_KINDS = ("truncated", "headers", "bomb")
+
+
+@functools.lru_cache(maxsize=None)
+def bomb_block_data():
+    """LZMA data of BOMB_SIZE zero bytes in 4 KiB pieces, each after its CRC-32."""
+    compressor = lzma.LZMACompressor(format=lzma.FORMAT_ALONE, filters=[
+        {"id": lzma.FILTER_LZMA1, "preset": 0, "dict_size": 1 << 16}])
+    zeros = bytes(1 << 20)
+    parts = [compressor.compress(zeros) for _ in range(BOMB_SIZE // len(zeros))]
+    alone = b"".join(parts) + compressor.flush()
+    # Inno Setup stores the 5 bytes of LZMA properties without the size field.
+    raw = alone[:5] + alone[13:]
+    return b"".join(struct.pack("<I", zlib.crc32(raw[i:i + 4096])) + raw[i:i + 4096]
+                    for i in range(0, len(raw), 4096))
+
+
+def make_bomb_block(compiler):
+    """A setup header block (for the version of compiler) whose LZMA data
+    decompresses to BOMB_SIZE zero bytes."""
+    stored = bomb_block_data()
+    size_format = "<Q" if compiler_version(compiler) >= (6, 7, 0) else "<I"
+    header = struct.pack(size_format, len(stored)) + b"\x01"
+    return struct.pack("<I", zlib.crc32(header)) + header + stored
 
 
 def make_damaged(args, results, installers, payload):
@@ -349,18 +399,29 @@ def make_damaged(args, results, installers, payload):
       solid      lzma-solid.exe, one byte changed in the middle of its chunk
       truncated  lzma-solid.exe cut in the middle of its chunk
       headers    lzma-solid.exe cut inside the setup headers
+      bomb       lzma-solid.exe whose first setup header block decompresses
+                 to BOMB_SIZE bytes
     """
     damaged = {}
     for compiler in args.compilers:
         for kind, variant in (("stored", "none"), ("solid", "lzma-solid"),
-                              ("truncated", "lzma-solid"), ("headers", "lzma-solid")):
+                              ("truncated", "lzma-solid"), ("headers", "lzma-solid"),
+                              ("bomb", "lzma-solid")):
             exe = installers.get((compiler, variant))
             if not exe:
                 continue
             with open(exe, "rb") as f:
                 data = bytearray(f.read())
             problem = None
-            if kind == "stored":
+            if kind == "bomb":
+                headers = data.rfind(b"Inno Setup Setup Data")
+                if headers < 0:
+                    problem = "setup headers not found"
+                else:
+                    # The 64-byte version, then the encryption header (6.5+).
+                    offset = headers + 64 + (53 if compiler_version(compiler) >= (6, 5, 0) else 0)
+                    data[offset:] = make_bomb_block(compiler)
+            elif kind == "stored":
                 random_bin = payload["data/random.bin"]
                 needle = random_bin[len(random_bin) // 2 - 32:len(random_bin) // 2 + 32]
                 if data.count(needle) != 1:
@@ -390,7 +451,9 @@ def make_damaged(args, results, installers, payload):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "wb") as f:
                 f.write(data)
-            detail = "%s at offset %d" % ("cut" if kind in ("truncated", "headers") else "changed byte", offset)
+            detail = "%s at offset %d" % ("cut" if kind in ("truncated", "headers") else
+                                          "header block of %d MiB" % (BOMB_SIZE >> 20) if kind == "bomb" else
+                                          "changed byte", offset)
             damaged[(compiler, kind)] = (path, detail)
     return damaged
 
@@ -448,6 +511,8 @@ def compare_folder(out_dir, items, sources, payload, unchecked=()):
                                 % (path, sources[path], len(data), len(payload[sources[path]])))
         elif len(data) != items[path]:
             problems.append("%s: size %d, listed %s" % (path, len(data), items[path]))
+        elif OPTIONAL_EXTRA.search(path) and not data.startswith(IMAGE_MAGIC[path.rsplit(".", 1)[1]]):
+            problems.append("%s: content is not a %s image" % (path, path.rsplit(".", 1)[1]))
     for comps in sorted(found - set(expected) - tolerated):
         problems.append("unexpected file %s" % "\\".join(comps))
     return problems
@@ -694,6 +759,7 @@ def test_client(args, results, installers, expected, damaged, payload, env):
         results.check("client skip-existing %s" % tag, problems, "deleted %s" % deleted)
 
     test_client_damaged(args, results, client, installers, expected, damaged, payload)
+    test_client_missing_slice(args, results, client, installers, expected, payload)
 
 
 def test_client_damaged(args, results, client, installers, expected, damaged, payload):
@@ -701,10 +767,16 @@ def test_client_damaged(args, results, client, installers, expected, damaged, pa
         variant = "none" if kind == "stored" else "lzma-solid"
         exp = expected[(compiler, variant)]
         name = "client damaged %s/%s-%s" % (compiler, variant, kind)
-        if kind in ("truncated", "headers"):
+        if kind in DECLINED_KINDS:
             # Never a crash or hang: the installer is declined.
             code, objs, problems = client.run("l", path)
             problems += client_exit(code, objs, expected=2)
+            if kind == "bomb" and not IS_WINDOWS:
+                # The block fails at the limit instead of being decoded whole.
+                import resource
+                max_rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
+                if max_rss >= BOMB_SIZE * 3 // 4:
+                    problems.append("a child process used %d MiB" % (max_rss >> 20))
             results.check(name, problems, detail + ", cannot open")
             continue
         code, objs, problems = client.run("l", installers[(compiler, variant)])
@@ -736,6 +808,45 @@ def test_client_damaged(args, results, client, installers, expected, damaged, pa
     code, objs, problems = client.run("l", exe)
     problems += client_exit(code, objs, expected=2)
     results.check("client l payload/bin/calls.exe", problems, "not an installer")
+
+
+def test_client_missing_slice(args, results, client, installers, expected, payload):
+    """Disk spanning with a slice missing: the files with data in it or after
+    it in the same chunk are unavailable, the others are extracted."""
+    for (compiler, variant), exe in sorted(installers.items()):
+        if variant not in SPANNED_VARIANTS:
+            continue
+        name = "client missing slice %s/%s" % (compiler, variant)
+        slices = slice_files(exe)
+        missing = os.path.basename(slices[len(slices) // 2])
+        work = os.path.join(args.work_dir, "missing-slice", compiler)
+        shutil.rmtree(work, ignore_errors=True)
+        os.makedirs(work)
+        for f in [exe] + slices:
+            if os.path.basename(f) != missing:
+                shutil.copy2(f, work)
+        path = os.path.join(work, os.path.basename(exe))
+        exp = expected[(compiler, variant)]
+        code, objs, problems = client.run("l", path)
+        problems += client_exit(code, objs)
+        warning = (of_type(objs, "archive") or [{}])[0].get("warning", "")
+        if "Missing slice: %s" % missing not in warning:
+            problems.append("warning %r" % warning)
+        listed = {o["path"]: o.get("size") for o in of_type(objs, "item")}
+        out_dir = os.path.join(work, "out")
+        code, objs, x_problems = client.run("x", path, out_dir)
+        problems += x_problems + client_exit(code, objs, expected=4)
+        item_results = of_type(objs, "item_result")
+        bad = [o for o in item_results if o.get("result") != "ok"]
+        problems += ["%s: %s" % (o.get("path"), o.get("result")) for o in bad if o.get("result") != "unavailable"]
+        ok = sum(o.get("result") == "ok" and o.get("path") in exp.sources for o in item_results)
+        if not bad or not ok:
+            problems.append("%d files ok, %d unavailable" % (ok, len(bad)))
+        ends = of_type(objs, "extract_result")
+        if not ends or ends[0].get("hresult") != "0x00000000" or ends[0].get("completed") != ends[0].get("total"):
+            problems.append("extract_result %s" % (ends[:1],))
+        problems += compare_folder(out_dir, listed, exp.sources, payload, unchecked=[o.get("path") for o in bad])
+        results.check(name, problems, "without %s, %d files ok, %d unavailable" % (missing, ok, len(bad)))
 
 
 # ---------------------------------------------------------------------------
@@ -1078,7 +1189,7 @@ def test_sevenzip(args, results, installers, expected, damaged, payload, env, en
         variant = "none" if kind == "stored" else "lzma-solid"
         exp = expected[(compiler, variant)]
         name = "7z damaged %s/%s-%s" % (compiler, variant, kind)
-        if kind in ("truncated", "headers"):
+        if kind in DECLINED_KINDS:
             # Not opened as Inno (7-Zip may fall back to another handler).
             code, out, err = sz.run("l", "-slt", sz.path(path))
             problems = [] if code == 2 else exit_problem(code, err)

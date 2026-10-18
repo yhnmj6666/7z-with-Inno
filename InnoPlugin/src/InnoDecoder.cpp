@@ -33,8 +33,10 @@ bool DecodeZlibBuffer(const Byte *data, size_t size, std::string &out)
   outStream->Init();
   CMyComPtr2_Create<ICompressCoder, NCompress::NZlib::CDecoder> decoder;
   ICompressCoder *coder = decoder;
-  const HRESULT res = coder->Code(inStream, outStream, NULL, NULL, NULL);
-  if (res != S_OK)
+  // The decoder stops one byte after the limit, before the Adler-32 trailer.
+  const UInt64 outLimit = (UInt64)kMaxHeaderBlockSize + 1;
+  const HRESULT res = coder->Code(inStream, outStream, NULL, &outLimit, NULL);
+  if (res != S_OK || outStream->GetSize() > kMaxHeaderBlockSize)
     return false;
   out.assign((const char *)outStream->GetBuffer(), outStream->GetSize());
   return true;
@@ -57,6 +59,11 @@ bool DecodeLzma1Buffer(const Byte *data, size_t size, std::string &out)
   for (;;)
   {
     const size_t kStep = 1 << 16;
+    if (outPos >= kMaxHeaderBlockSize)
+    {
+      ok = false;
+      break;
+    }
     out.resize(outPos + kStep);
     SizeT outLen = kStep;
     SizeT inLen = size;
@@ -81,7 +88,9 @@ bool DecodeLzma1Buffer(const Byte *data, size_t size, std::string &out)
     }
   }
   LzmaDec_Free(&dec, &g_Alloc);
-  out.resize(outPos);
+  if (outPos > kMaxHeaderBlockSize)
+    ok = false;
+  out.resize(ok ? outPos : 0);
   return ok;
 }
 
@@ -222,6 +231,44 @@ Z7_COM7F_IMF(CXChaCha20InStream::Read(void *data, UInt32 size, UInt32 *processed
 }
 
 
+Z7_COM7F_IMF(CSliceInStream::Read(void *data, UInt32 size, UInt32 *processedSize))
+{
+  if (processedSize)
+    *processedSize = 0;
+  while (size != 0)
+  {
+    if (_slice >= _slices->size() || !(*_slices)[_slice].Stream)
+    {
+      MissingSlice = true;
+      return S_OK;
+    }
+    const CSlice &slice = (*_slices)[_slice];
+    if (_pos >= slice.Size)
+    {
+      _slice++;
+      if (_slice < _slices->size())
+        _pos = (*_slices)[_slice].HeaderSize;
+      continue;
+    }
+    // Every read seeks: chunks of other slices may have moved the stream.
+    RINOK(InStream_SeekSet(slice.Stream, _pos))
+    const UInt64 rem = slice.Size - _pos;
+    UInt32 cur = (rem < size) ? (UInt32)rem : size;
+    RINOK(slice.Stream->Read(data, cur, &cur))
+    if (cur == 0)
+    {
+      Truncated = true;
+      return S_OK;
+    }
+    _pos += cur;
+    if (processedSize)
+      *processedSize = cur;
+    return S_OK;
+  }
+  return S_OK;
+}
+
+
 void CChunkDecoder::Close()
 {
   _isOpen = false;
@@ -235,12 +282,11 @@ void CChunkDecoder::Close()
   _pos = 0;
 }
 
-HRESULT CChunkDecoder::Open(IInStream *stream, UInt64 dataOffset, const stream::chunk &chunk,
+HRESULT CChunkDecoder::Open(ISequentialInStream *stream, const stream::chunk &chunk,
     const std::string &key)
 {
   Close();
 
-  RINOK(InStream_SeekSet(stream, dataOffset + chunk.offset))
   Byte magic[sizeof(kChunkMagic)];
   RINOK(ReadStream_FALSE(stream, magic, sizeof(magic)))
   if (memcmp(magic, kChunkMagic, sizeof(magic)) != 0)

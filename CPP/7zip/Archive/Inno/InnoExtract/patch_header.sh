@@ -1,2 +1,0 @@
-find ./ -mindepth 2 -type f -name "*.cpp" -exec sed -i "s+#include \"+#include \"../+g" {} \; -exec sed -i "s+#include <boost+//#include <boost+g" {} \; -exec sed -i "1 i #include \"stdafx.h\"" {} \; -exec sed -i "s+private:+public:+g" {} \;
-find ./ -mindepth 2 -type f -name "*.hpp" -exec sed -i "s+#include \"+#include \"../+g" {} \; -exec sed -i "s+#include <boost+//#include <boost+g" {} \; -exec sed -i " 1 i #include \"..\/minihead.hpp\"" {} \; -exec sed -i "s+private:+public:+g" {} \;

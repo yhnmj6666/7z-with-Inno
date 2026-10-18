@@ -4,14 +4,13 @@ A format plugin that lets stock 7-Zip (7z.exe, 7zG.exe, 7zFM.exe) open, list,
 test and extract Inno Setup installers. 7-Zip loads it from its `Formats`
 folder, so 7-Zip updates do not require rebuilding the plugin.
 
-This folder is the standalone rewrite of the plugin in `CPP/7zip/Archive/Inno/`
-(see `.github/prompts/inno-plugin-refactor.prompt.md`). Phases 1 and 2 moved
-the handler onto a vendored 7-Zip 26.04 subset with a CMake build for MSVC,
-GCC and MinGW, and added tests. Phase 3 decodes the file data with 7-Zip
-streams and decoders. Phase 4 makes the handler behave like 7-Zip's own
-formats: test mode, skipped items, per-item results, progress, cancellation,
-UTF-8 names, detection of renamed installers, and no console output or files.
-See [Known limitations](#known-limitations) for what is still missing.
+The plugin builds from this folder alone: the Inno Setup format code derived
+from innoextract, a vendored subset of 7-Zip 26.04 for the 7-Zip interfaces,
+streams and decoders, and a CMake build for MSVC, GCC and MinGW. It replaces
+the older plugin that was built inside a 7-Zip 22.00 source tree in this
+repository (rewritten as described in
+`.github/prompts/inno-plugin-refactor.prompt.md`). See
+[Known limitations](#known-limitations).
 
 ## Installation
 
@@ -72,7 +71,8 @@ that the installer keeps in its setup headers:
 | `embedded\License.txt` or `.rtf` | the license text (`LicenseFile`) |
 | `embedded\<language>.isl` | the messages of each language |
 | `embedded\<language>.txt` or `.rtf` | the license of each language |
-| `embedded\WizardImage<N>.bmp`, `embedded\WizardImageSmall<N>.bmp` | the wizard images |
+| `embedded\WizardImage<N>.bmp`, `embedded\WizardImageSmall<N>.bmp` | the wizard images (`WizardImageFile`, `WizardSmallImageFile`), named `.png` for PNG images (Inno Setup 6.6 and later) |
+| `embedded\WizardImageBack<N>`, `embedded\WizardImageDark<N>`, `embedded\WizardImageSmallDark<N>`, `embedded\WizardImageBackDark<N>` | the background images (`WizardBackImageFile`, 6.7 and later) and the images for dark mode (`...DynamicDark`, 6.6 and later), with `.bmp` or `.png` as above |
 
 Modification times are the times Setup gives the installed files. Installers
 built with `TimeStampsInUTC=yes` (the default from Inno Setup 7) store UTC.
@@ -106,11 +106,28 @@ Installers with a setup data version newer than the plugin knows open as an
 empty archive with the error "Unsupported Inno Setup version: <version>"
 instead of being declined, so 7-Zip does not show them as a plain `PE` file.
 
+Disk-spanning installers (`DiskSpanning=yes`) keep the file data in slice
+files next to the installer: `setup-1.bin`, `setup-2.bin`, ... for
+`setup.exe`, or `setup-1a.bin`, `setup-1b.bin`, ... with `SlicesPerDisk`
+greater than 1. The plugin opens them through 7-Zip's volume callback, as
+7-Zip does for the volumes of multi-volume archives, so open the installer,
+not a slice. It looks for the slices under the installer's file name without
+its extension, then under `OutputBaseFilename` (Inno Setup before 4.1.7
+names the slices after `OutputBaseFilename`, so there the order is reversed).
+Files whose data starts in a missing slice, or continues into one, are
+reported as "Unavailable", and the archive gets the warning
+"Missing slice: <name>"; the other files are extracted. A slice that does not
+start with a valid slice header gives the warning "Bad slice header: <name>"
+and is treated as missing.
+
 7-Zip recognizes installers by their content, so renamed installers (for
-example `setup.bin`) open too, and `-tInno` forces the format. Executables
-that are not Inno Setup installers, including damaged installers whose setup
-headers cannot be read, are declined, so 7-Zip opens them with its other
-handlers (for example as `PE` or as a 7z SFX).
+example `setup.bin`) open too, and `-tInno` forces the format, for example
+`7z l -tInno setup.bin`. Executables that are not Inno Setup installers,
+including damaged installers whose setup headers cannot be read, are
+declined, so 7-Zip opens them with its other handlers (for example as `PE` or
+as a 7z SFX). A setup header block that decompresses to more than 256 MiB is
+treated as damaged, so a crafted installer cannot make the plugin use more
+memory than that for one block.
 
 The plugin writes nothing to the console or to disk. For debugging, set the
 environment variable `INNO_PLUGIN_LOG` to a file name before starting 7-Zip;
@@ -149,8 +166,10 @@ skips the test client.
 compilers under Wine, then checks the plugin through the test client and
 through Windows 7-Zip: listing, methods and timestamps, extraction and test
 mode against the payload, a subset in reverse order, skipping existing files,
-progress totals, damaged installers, other executables, and that the plugin
-prints nothing and writes no files. On Windows it runs with a prebuilt corpus
+progress totals, damaged installers (including a setup header block that
+decompresses to 1 GiB), disk spanning with all slices and with a missing
+slice, other executables, and that the plugin prints nothing and writes no
+files. On Windows it runs with a prebuilt corpus
 and a 7-Zip folder. See [tests/README.md](tests/README.md). The workflow
 `.github/workflows/inno-plugin.yml` builds everything and runs the tests on
 Ubuntu (GCC, MinGW, Wine) and Windows (MSVC, official 7-Zip 26.04 x64 and x86).
@@ -160,26 +179,29 @@ Ubuntu (GCC, MinGW, Wine) and Windows (MSVC, official 7-Zip 26.04 x64 and x86).
 The format code comes from innoextract (commit `6e9e34ed08`, February 2025,
 for Inno Setup up to 6.4.0.1), extended for the setup data versions of Inno
 Setup 6.4.1 to 7.1.0 (the newest is `7.0.0.3`) from the Inno Setup sources.
-Tested so far:
 
-| Inno Setup | Tested with |
-|---|---|
-| 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2, 6.3.3, 6.4.3, 6.5.4, 6.6.1, 6.7.3, 7.0.2 (x64), 7.1.0 (x64 and x86) | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`; timestamps in UTC and local time; `Encryption=yes`, and `Encryption=full` from 6.5, with the right, a wrong and no password), every CI run |
-| 5.0.4 to 6.2.0 | 15 real installers, checked by the owner with the MSVC and MinGW builds: every file has the same content as with the old plugin, and `7z t` passes |
+| Inno Setup | Support | Tested with |
+|---|---|---|
+| 1.2.10 to 5.0.3 | setup data formats from innoextract (16-bit and 32-bit, ANSI) | not tested |
+| 5.0.4 to 6.2.0 | supported | 15 real installers, checked by the owner with the MSVC and MinGW builds: every file has the same content as with the old plugin, and `7z t` passes |
+| 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2, 6.3.3, 6.4.3, 6.5.4, 6.6.1, 6.7.3, 7.0.2 (x64), 7.1.0 (x64 and x86) | supported | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`; timestamps in UTC and local time; disk spanning; `Encryption=yes`, and `Encryption=full` from 6.5, with the right, a wrong and no password), every CI run |
+| other versions up to 7.1.0 (setup data `7.0.0.3`) | supported | not tested |
+| newer setup data versions | opens with the error "Unsupported Inno Setup version" | test with a patched version string |
 
 The encrypted corpus installers of Inno Setup before 6.4 are compiled with the
 official `ISCrypt.dll`, which `.github/scripts/setup-inno-tools.sh` downloads
 and checks by its SHA-256; where it cannot be downloaded, with a stand-in
 (`tests/iscrypt/iscrypt.c`, standard ARCFOUR).
-Disk-spanning installers are not supported yet.
 
 ## Known limitations
 
-- Disk-spanning installers open, but their files are reported as
-  "Unavailable" (Phase 6).
-- The dark and back wizard images of Inno Setup 6.6 and later are read but
-  not listed; wizard images are always named `.bmp`, also when they are PNG
-  files (6.6 and later).
+- Slices of disk-spanning installers are looked up only under the names
+  described above, in the installer's folder, with the exact case where the
+  file system is case-sensitive. For an installer opened inside another
+  archive (for example in a zip file), 7-Zip offers no other volumes, so the
+  files of a disk-spanning installer are "Unavailable".
+- Wizard images that are neither PNG nor BMP are listed with the extension
+  `.bin`.
 - Files that Setup downloads (`[Files]` flag `download`, Inno Setup 6.5 and
   later) have no data in the installer and are not listed.
 - Timestamps stored in local time are converted with the current time zone
