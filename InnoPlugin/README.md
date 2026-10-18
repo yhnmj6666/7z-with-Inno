@@ -96,7 +96,11 @@ is decrypted; a wrong one gives "Wrong password" for each encrypted file, or
 for `Encryption=full` an empty archive with the error "Headers Error in
 encrypted archive. Wrong password?". Inno Setup before 6.4 encrypts with
 ARCFOUR (the archive method shows `ARC4`), 6.4 and later with XChaCha20 and
-a PBKDF2-SHA256 key (`XChaCha20`).
+a PBKDF2-SHA256 key (`XChaCha20`). The plugin derives the key with at most
+2^24 PBKDF2 iterations (Inno Setup uses 220000), like 7-Zip's 7z and RAR5
+handlers; an installer that asks for more gives "Unsupported method" for its
+encrypted files, or with `Encryption=full` the error "Unsupported key
+derivation".
 
 Installers with a setup data version newer than the plugin knows open as an
 empty archive with the error "Unsupported Inno Setup version: <version>"
