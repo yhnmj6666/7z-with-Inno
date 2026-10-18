@@ -33,8 +33,10 @@ bool DecodeZlibBuffer(const Byte *data, size_t size, std::string &out)
   outStream->Init();
   CMyComPtr2_Create<ICompressCoder, NCompress::NZlib::CDecoder> decoder;
   ICompressCoder *coder = decoder;
-  const HRESULT res = coder->Code(inStream, outStream, NULL, NULL, NULL);
-  if (res != S_OK)
+  // The decoder stops one byte after the limit, before the Adler-32 trailer.
+  const UInt64 outLimit = (UInt64)kMaxHeaderBlockSize + 1;
+  const HRESULT res = coder->Code(inStream, outStream, NULL, &outLimit, NULL);
+  if (res != S_OK || outStream->GetSize() > kMaxHeaderBlockSize)
     return false;
   out.assign((const char *)outStream->GetBuffer(), outStream->GetSize());
   return true;
@@ -57,6 +59,11 @@ bool DecodeLzma1Buffer(const Byte *data, size_t size, std::string &out)
   for (;;)
   {
     const size_t kStep = 1 << 16;
+    if (outPos >= kMaxHeaderBlockSize)
+    {
+      ok = false;
+      break;
+    }
     out.resize(outPos + kStep);
     SizeT outLen = kStep;
     SizeT inLen = size;
@@ -81,7 +88,9 @@ bool DecodeLzma1Buffer(const Byte *data, size_t size, std::string &out)
     }
   }
   LzmaDec_Free(&dec, &g_Alloc);
-  out.resize(outPos);
+  if (outPos > kMaxHeaderBlockSize)
+    ok = false;
+  out.resize(ok ? outPos : 0);
   return ok;
 }
 

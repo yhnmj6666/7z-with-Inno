@@ -10,13 +10,17 @@ summary; the exit code is 0 only if nothing failed.
 """
 
 import argparse
+import functools
 import hashlib
 import json
+import lzma
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
+import zlib
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_DIR = os.path.dirname(TESTS_DIR)
@@ -339,6 +343,36 @@ def build_corpus(args, results, encrypted=False):
     return installers
 
 
+# Uncompressed size of the setup header block of the "bomb" copies, beyond
+# the limit of the plugin (256 MiB).
+BOMB_SIZE = 1 << 30
+# Kinds of damaged copies that cannot be opened.
+DECLINED_KINDS = ("truncated", "headers", "bomb")
+
+
+@functools.lru_cache(maxsize=None)
+def bomb_block_data():
+    """LZMA data of BOMB_SIZE zero bytes in 4 KiB pieces, each after its CRC-32."""
+    compressor = lzma.LZMACompressor(format=lzma.FORMAT_ALONE, filters=[
+        {"id": lzma.FILTER_LZMA1, "preset": 0, "dict_size": 1 << 16}])
+    zeros = bytes(1 << 20)
+    parts = [compressor.compress(zeros) for _ in range(BOMB_SIZE // len(zeros))]
+    alone = b"".join(parts) + compressor.flush()
+    # Inno Setup stores the 5 bytes of LZMA properties without the size field.
+    raw = alone[:5] + alone[13:]
+    return b"".join(struct.pack("<I", zlib.crc32(raw[i:i + 4096])) + raw[i:i + 4096]
+                    for i in range(0, len(raw), 4096))
+
+
+def make_bomb_block(compiler):
+    """A setup header block (for the version of compiler) whose LZMA data
+    decompresses to BOMB_SIZE zero bytes."""
+    stored = bomb_block_data()
+    size_format = "<Q" if compiler_version(compiler) >= (6, 7, 0) else "<I"
+    header = struct.pack(size_format, len(stored)) + b"\x01"
+    return struct.pack("<I", zlib.crc32(header)) + header + stored
+
+
 def make_damaged(args, results, installers, payload):
     """Writes damaged copies of corpus installers. Returns {(compiler, kind): (path, detail)}.
 
@@ -349,18 +383,29 @@ def make_damaged(args, results, installers, payload):
       solid      lzma-solid.exe, one byte changed in the middle of its chunk
       truncated  lzma-solid.exe cut in the middle of its chunk
       headers    lzma-solid.exe cut inside the setup headers
+      bomb       lzma-solid.exe whose first setup header block decompresses
+                 to BOMB_SIZE bytes
     """
     damaged = {}
     for compiler in args.compilers:
         for kind, variant in (("stored", "none"), ("solid", "lzma-solid"),
-                              ("truncated", "lzma-solid"), ("headers", "lzma-solid")):
+                              ("truncated", "lzma-solid"), ("headers", "lzma-solid"),
+                              ("bomb", "lzma-solid")):
             exe = installers.get((compiler, variant))
             if not exe:
                 continue
             with open(exe, "rb") as f:
                 data = bytearray(f.read())
             problem = None
-            if kind == "stored":
+            if kind == "bomb":
+                headers = data.rfind(b"Inno Setup Setup Data")
+                if headers < 0:
+                    problem = "setup headers not found"
+                else:
+                    # The 64-byte version, then the encryption header (6.5+).
+                    offset = headers + 64 + (53 if compiler_version(compiler) >= (6, 5, 0) else 0)
+                    data[offset:] = make_bomb_block(compiler)
+            elif kind == "stored":
                 random_bin = payload["data/random.bin"]
                 needle = random_bin[len(random_bin) // 2 - 32:len(random_bin) // 2 + 32]
                 if data.count(needle) != 1:
@@ -390,7 +435,9 @@ def make_damaged(args, results, installers, payload):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "wb") as f:
                 f.write(data)
-            detail = "%s at offset %d" % ("cut" if kind in ("truncated", "headers") else "changed byte", offset)
+            detail = "%s at offset %d" % ("cut" if kind in ("truncated", "headers") else
+                                          "header block of %d MiB" % (BOMB_SIZE >> 20) if kind == "bomb" else
+                                          "changed byte", offset)
             damaged[(compiler, kind)] = (path, detail)
     return damaged
 
@@ -701,10 +748,16 @@ def test_client_damaged(args, results, client, installers, expected, damaged, pa
         variant = "none" if kind == "stored" else "lzma-solid"
         exp = expected[(compiler, variant)]
         name = "client damaged %s/%s-%s" % (compiler, variant, kind)
-        if kind in ("truncated", "headers"):
+        if kind in DECLINED_KINDS:
             # Never a crash or hang: the installer is declined.
             code, objs, problems = client.run("l", path)
             problems += client_exit(code, objs, expected=2)
+            if kind == "bomb" and not IS_WINDOWS:
+                # The block fails at the limit instead of being decoded whole.
+                import resource
+                max_rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
+                if max_rss >= BOMB_SIZE * 3 // 4:
+                    problems.append("a child process used %d MiB" % (max_rss >> 20))
             results.check(name, problems, detail + ", cannot open")
             continue
         code, objs, problems = client.run("l", installers[(compiler, variant)])
@@ -1078,7 +1131,7 @@ def test_sevenzip(args, results, installers, expected, damaged, payload, env, en
         variant = "none" if kind == "stored" else "lzma-solid"
         exp = expected[(compiler, variant)]
         name = "7z damaged %s/%s-%s" % (compiler, variant, kind)
-        if kind in ("truncated", "headers"):
+        if kind in DECLINED_KINDS:
             # Not opened as Inno (7-Zip may fall back to another handler).
             code, out, err = sz.run("l", "-slt", sz.path(path))
             problems = [] if code == 2 else exit_problem(code, err)
