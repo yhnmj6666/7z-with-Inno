@@ -71,7 +71,7 @@ that the installer keeps in its setup headers:
 | `embedded\License.txt` or `.rtf` | the license text (`LicenseFile`) |
 | `embedded\<language>.isl` | the messages of each language |
 | `embedded\<language>.txt` or `.rtf` | the license of each language |
-| `embedded\WizardImage<N>.bmp`, `embedded\WizardImageSmall<N>.bmp` | the wizard images (`WizardImageFile`, `WizardSmallImageFile`), named `.png` for PNG images (Inno Setup 6.6 and later) |
+| `embedded\WizardImage<N>.bmp`, `embedded\WizardImageSmall<N>.bmp` | the wizard images (`WizardImageFile`, `WizardSmallImageFile`), named `.png` for PNG images (Inno Setup 6.5.2 and later) |
 | `embedded\WizardImageBack<N>`, `embedded\WizardImageDark<N>`, `embedded\WizardImageSmallDark<N>`, `embedded\WizardImageBackDark<N>` | the background images (`WizardBackImageFile`, 6.7 and later) and the images for dark mode (`...DynamicDark`, 6.6 and later), with `.bmp` or `.png` as above |
 
 Modification times are the times Setup gives the installed files. Installers
@@ -111,9 +111,12 @@ files next to the installer: `setup-1.bin`, `setup-2.bin`, ... for
 `setup.exe`, or `setup-1a.bin`, `setup-1b.bin`, ... with `SlicesPerDisk`
 greater than 1. The plugin opens them through 7-Zip's volume callback, as
 7-Zip does for the volumes of multi-volume archives, so open the installer,
-not a slice. It looks for the slices under the installer's file name without
-its extension, then under `OutputBaseFilename` (Inno Setup before 4.1.7
-names the slices after `OutputBaseFilename`, so there the order is reversed).
+not a slice. Like Setup, it looks for the slices under the installer's file
+name without its extension, so a renamed installer (for example
+`setup (1).exe`) does not find them: rename it back, or rename the slices to
+match. Where the setup headers store a base name, that name is tried too
+(first for installers from before Inno Setup 4.1.7, which name their slices
+after it).
 Files whose data starts in a missing slice, or continues into one, are
 reported as "Unavailable", and the archive gets the warning
 "Missing slice: <name>"; the other files are extracted. A slice that does not
@@ -196,10 +199,11 @@ and checks by its SHA-256; where it cannot be downloaded, with a stand-in
 ## Known limitations
 
 - Slices of disk-spanning installers are looked up only under the names
-  described above, in the installer's folder, with the exact case where the
-  file system is case-sensitive. For an installer opened inside another
-  archive (for example in a zip file), 7-Zip offers no other volumes, so the
-  files of a disk-spanning installer are "Unavailable".
+  described above (so not for a renamed installer), in the installer's
+  folder, with the exact case where the file system is case-sensitive. For an
+  installer opened inside another archive (for example in a zip file), 7-Zip
+  offers no other volumes, so the files of a disk-spanning installer are
+  "Unavailable".
 - Wizard images that are neither PNG nor BMP are listed with the extension
   `.bin`.
 - Files that Setup downloads (`[Files]` flag `download`, Inno Setup 6.5 and

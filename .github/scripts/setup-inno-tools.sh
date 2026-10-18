@@ -17,7 +17,7 @@ TOOLS=/opt/inno-tools
 SRC=/opt/src
 SEVENZIP_TAG=26.04
 INNOEXTRACT_COMMIT=6e9e34ed0876014fdb46e684103ef8c3605e382e
-ISCRYPT_URL=https://jrsoftware.org/download.php/iscrypt.dll
+ISCRYPT_URLS=(https://jrsoftware.org/download.php/iscrypt.dll https://files.innosetup.nl/ISCrypt.dll)
 ISCRYPT_SHA256=2f6294f9aa09f59a574b5dcd33be54e16b39377984f3d5658cda44950fa0f8fc
 
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
@@ -121,10 +121,19 @@ step_iscc() {
   # Before 6.4, Encryption=yes needs ISCrypt.dll in the compiler folder. Install
   # the official DLL, checked by its SHA-256; only if it cannot be downloaded,
   # build the ARCFOUR stand-in InnoPlugin/tests/iscrypt/iscrypt.c instead.
-  local iscrypt=/tmp/ISCrypt.dll kind=official
-  if ! curl -fsSL -o "$iscrypt" "$ISCRYPT_URL" \
-      || [ "$(sha256sum "$iscrypt" | cut -d' ' -f1)" != "$ISCRYPT_SHA256" ]; then
-    echo "::warning::The official ISCrypt.dll is unavailable or changed, building the stand-in"
+  local iscrypt=/tmp/ISCrypt.dll kind="" url
+  for url in "${ISCRYPT_URLS[@]}"; do
+    if ! curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$iscrypt" "$url"; then
+      echo "::warning::Cannot download ISCrypt.dll from $url"
+    elif [ "$(sha256sum "$iscrypt" | cut -d' ' -f1)" != "$ISCRYPT_SHA256" ]; then
+      echo "::warning::ISCrypt.dll from $url has an unexpected SHA-256"
+    else
+      kind=official
+      break
+    fi
+  done
+  if [ -z "$kind" ]; then
+    echo "::warning::The official ISCrypt.dll is not available, building the stand-in"
     kind=stand-in
     if ! i686-w64-mingw32-gcc -O2 -shared -s -Wl,--kill-at -o "$iscrypt" \
          "$(dirname "$0")/../../InnoPlugin/tests/iscrypt/iscrypt.c"; then
