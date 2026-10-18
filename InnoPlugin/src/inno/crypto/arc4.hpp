@@ -1,4 +1,4 @@
-// Origin: innoextract src/crypto/arc4.hpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/crypto/arc4.hpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 #include "../minihead.hpp"
 /*
@@ -35,7 +35,7 @@
 
 //#include "../configure.hpp"
 
-#if INNOEXTRACT_HAVE_ARC4
+#if INNOEXTRACT_HAVE_DECRYPTION
 
 namespace crypto {
 
@@ -59,7 +59,7 @@ private:
 
 } // namespace crypto
 
-#endif // INNOEXTRACT_HAVE_ARC4
+#endif // INNOEXTRACT_HAVE_DECRYPTION
 
 #endif // INNOEXTRACT_CRYPTO_ARC4_HPP
 

@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/file.cpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/file.cpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 /*
  * Copyright (C) 2011-2020 Daniel Scharrer
@@ -94,6 +94,20 @@ void file_entry::load(std::istream & is, const info & i) {
 	
 	load_condition_data(is, i);
 	
+	if(i.version >= INNO_VERSION(6, 5, 0)) {
+		is >> util::encoded_string(excludes, i.codepage);
+		util::binary_string::skip(is); // DownloadISSigSource
+		util::binary_string::skip(is); // DownloadUserName
+		util::binary_string::skip(is); // DownloadPassword
+		util::binary_string::skip(is); // ExtractArchivePassword
+		// TSetupFileVerification
+		util::binary_string::skip(is); // ISSigAllowedKeys
+		util::discard(is, 32); // SHA-256 hash
+		(void)util::load<boost::uint8_t>(is); // verification type
+	} else {
+		excludes.clear();
+	}
+	
 	load_version_data(is, i.version);
 	
 	location = util::load<boost::uint32_t>(is, i.version.bits());
@@ -115,6 +129,11 @@ void file_entry::load(std::istream & is, const info & i) {
 		permission = util::load<boost::int16_t>(is);
 	} else {
 		permission = boost::int16_t(-1);
+	}
+	
+	unsigned bitness = 0;
+	if(i.version >= INNO_VERSION_EXT(7, 0, 0, 3)) {
+		bitness = load_bitness(is);
 	}
 	
 	stored_flag_reader<flags> flagreader(is, i.version.bits());
@@ -179,7 +198,7 @@ void file_entry::load(std::istream & is, const info & i) {
 	if(i.version >= INNO_VERSION(5, 1, 0)) {
 		flagreader.add(CreateAllSubDirs);
 	}
-	if(i.version >= INNO_VERSION(5, 1, 2)) {
+	if(i.version >= INNO_VERSION(5, 1, 2) && i.version < INNO_VERSION_EXT(7, 0, 0, 3)) {
 		flagreader.add(Bits32);
 		flagreader.add(Bits64);
 	}
@@ -191,8 +210,22 @@ void file_entry::load(std::istream & is, const info & i) {
 	if(i.version >= INNO_VERSION(5, 2, 5)) {
 		flagreader.add(GacInstall);
 	}
+	if(i.version >= INNO_VERSION(6, 5, 0)) {
+		flagreader.add(Download);
+		flagreader.add(ExtractArchive);
+	}
 	
-	options |= flagreader;
+	if(i.version >= INNO_VERSION(6, 7, 0)) {
+		options |= flagreader.finalize(57);
+	} else {
+		options |= flagreader.finalize();
+	}
+	
+	if(bitness == 32) {
+		options |= Bits32;
+	} else if(bitness == 64) {
+		options |= Bits64;
+	}
 	
 	if(i.version.bits() == 16 || i.version >= INNO_VERSION(5, 0, 0)) {
 		type = stored_enum<stored_file_type_0>(is).get();
@@ -241,6 +274,8 @@ NAMES(setup::file_entry::flags, "File Option",
 	"set ntfs compression",
 	"unset ntfs compression",
 	"gac install",
+	"download",
+	"extract archive",
 	"readme",
 )
 

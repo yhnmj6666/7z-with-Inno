@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/run.cpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/run.cpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 /*
  * Copyright (C) 2011-2020 Daniel Scharrer
@@ -71,6 +71,10 @@ void run_entry::load(std::istream & is, const info & i) {
 	
 	load_condition_data(is, i);
 	
+	if(i.version >= INNO_VERSION_EXT(7, 0, 0, 1)) {
+		util::binary_string::skip(is); // OnLog
+	}
+	
 	load_version_data(is, i.version);
 	
 	if(i.version >= INNO_VERSION(1, 3, 24)) {
@@ -80,6 +84,11 @@ void run_entry::load(std::istream & is, const info & i) {
 	}
 	
 	wait = stored_enum<stored_run_wait_condition>(is).get();
+	
+	unsigned bitness = 0;
+	if(i.version >= INNO_VERSION_EXT(7, 0, 0, 3)) {
+		bitness = load_bitness(is);
+	}
 	
 	stored_flag_reader<flags> flagreader(is, i.version.bits());
 	
@@ -98,7 +107,7 @@ void run_entry::load(std::istream & is, const info & i) {
 	if(i.version >= INNO_VERSION(2, 0, 8)) {
 		flagreader.add(HideWizard);
 	}
-	if(i.version >= INNO_VERSION(5, 1, 10)) {
+	if(i.version >= INNO_VERSION(5, 1, 10) && i.version < INNO_VERSION_EXT(7, 0, 0, 3)) {
 		flagreader.add(Bits32);
 		flagreader.add(Bits64);
 	}
@@ -108,8 +117,17 @@ void run_entry::load(std::istream & is, const info & i) {
 	if(i.version >= INNO_VERSION(6, 1, 0)) {
 		flagreader.add(DontLogParameters);
 	}
+	if(i.version >= INNO_VERSION(6, 3, 0)) {
+		flagreader.add(LogOutput);
+	}
 	
-	options = flagreader;
+	options = flagreader.finalize();
+	
+	if(bitness == 32) {
+		options |= Bits32;
+	} else if(bitness == 64) {
+		options |= Bits64;
+	}
 }
 
 } // namespace setup
@@ -125,6 +143,8 @@ NAMES(setup::run_entry::flags, "Run Option",
 	"32 bit",
 	"64 bit",
 	"run as original user",
+	"don't log parameters",
+	"log output",
 )
 
 NAMES(setup::run_entry::wait_condition, "Run Wait Type",

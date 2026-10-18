@@ -47,6 +47,13 @@ static std::string OSS_Clean(const std::string &s)
 	return name;
 }
 
+// Name of value i of an enum or flag set, also for values without a name.
+template <class E>
+static const char *Enum_Name(size_t i)
+{
+	return i < enum_names<E>::count ? enum_names<E>::names[i] : "unknown";
+}
+
 static std::string Flag_Clean(std::string s)
 {
 	auto wit = s.begin();
@@ -169,7 +176,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 						first_flag = false;
 					}
 					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
+					oss << ' ' << Flag_Clean(Enum_Name<enum_type>(j));
 				}
 			}
 			oss << endl;
@@ -203,7 +210,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 						first_flag = false;
 					}
 					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
+					oss << ' ' << Flag_Clean(Enum_Name<enum_type>(j));
 				}
 			}
 			oss << endl;
@@ -234,7 +241,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 						first_flag = false;
 					}
 					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
+					oss << ' ' << Flag_Clean(Enum_Name<enum_type>(j));
 				}
 			}
 			oss << endl;
@@ -283,7 +290,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 						first_flag = false;
 					}
 					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
+					oss << ' ' << Flag_Clean(Enum_Name<enum_type>(j));
 				}
 			}
 			oss << endl;
@@ -324,7 +331,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 						first_flag = false;
 					}
 					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
+					oss << ' ' << Flag_Clean(Enum_Name<enum_type>(j));
 				}
 			}
 			oss << endl;
@@ -358,7 +365,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 						first_flag = false;
 					}
 					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
+					oss << ' ' << Flag_Clean(Enum_Name<enum_type>(j));
 				}
 			}
 			oss << endl;
@@ -373,7 +380,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 		{
 			using enum_type = std::remove_reference_t<decltype(i)>::target_type;
 			static_assert(enum_names<enum_type>::named == 1);
-			oss << "Type: " << Flag_Clean(enum_names<enum_type>::names[i.type]);
+			oss << "Type: " << Flag_Clean(Enum_Name<enum_type>(i.type));
 #			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
 			_OSS(i.name);
 			_OSS(i.check);
@@ -424,11 +431,11 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 			using value_type = std::remove_reference_t<decltype(i)>::value_type;
 			static_assert(enum_names<hive_name>::named == 1);
 			static_assert(enum_names<value_type>::named == 1);
-			oss << "Root: " << Flag_Clean(enum_names<hive_name>::names[i.hive]);
+			oss << "Root: " << Flag_Clean(Enum_Name<hive_name>(i.hive));
 #			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
 #			define _OSS2(s,d) if (!s.empty()) oss << "; " d ": \"" << s << '"'
 			_OSS2(i.key, "Subkey");
-			oss << "; ValueType: " << Flag_Clean(enum_names<value_type>::names[i.type]);
+			oss << "; ValueType: " << Flag_Clean(Enum_Name<value_type>(i.type));
 			_OSS2(i.name, "ValueName");
 			_OSS2(i.value,"ValueData");
 			_OSS(i.permissions);
@@ -447,7 +454,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 						first_flag = false;
 					}
 					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
+					oss << ' ' << Flag_Clean(Enum_Name<enum_type>(j));
 				}
 			}
 			oss << endl;
@@ -484,7 +491,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 						first_flag = false;
 					}
 					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
+					oss << ' ' << Flag_Clean(Enum_Name<enum_type>(j));
 				}
 			}
 			oss << endl;
@@ -499,7 +506,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 		{
 			using enum_type = std::remove_reference_t<decltype(i)>::target_type;
 			static_assert(enum_names<enum_type>::named == 1);
-			oss << "Type: " << Flag_Clean(enum_names<enum_type>::names[i.type]);
+			oss << "Type: " << Flag_Clean(Enum_Name<enum_type>(i.type));
 #			define _OSS(s) if (!s.empty()) oss << "; "<<OSS_Clean(#s)<<": \"" << s << '"'
 			_OSS(i.name);
 			_OSS(i.check);
@@ -538,7 +545,7 @@ void GenerateInstallScript(const setup::info &info, std::string &out)
 						first_flag = false;
 					}
 					static_assert(enum_names<enum_type>::named == 1);
-					oss << ' ' << Flag_Clean(enum_names<enum_type>::names[j]);
+					oss << ' ' << Flag_Clean(Enum_Name<enum_type>(j));
 				}
 			}
 			oss << endl;

@@ -204,6 +204,24 @@ Z7_COM7F_IMF(CArc4InStream::Read(void *data, UInt32 size, UInt32 *processedSize)
 }
 
 
+CXChaCha20InStream::CXChaCha20InStream(ISequentialInStream *stream, const std::string &key,
+    const stream::chunk &chunk):
+    _stream(stream)
+{
+  _cipher.init(key, chunk.offset, chunk.first_slice);
+}
+
+Z7_COM7F_IMF(CXChaCha20InStream::Read(void *data, UInt32 size, UInt32 *processedSize))
+{
+  UInt32 processed = 0;
+  const HRESULT res = _stream->Read(data, size, &processed);
+  _cipher.crypt((const char *)data, (char *)data, processed);
+  if (processedSize)
+    *processedSize = processed;
+  return res;
+}
+
+
 void CChunkDecoder::Close()
 {
   _isOpen = false;
@@ -218,7 +236,7 @@ void CChunkDecoder::Close()
 }
 
 HRESULT CChunkDecoder::Open(IInStream *stream, UInt64 dataOffset, const stream::chunk &chunk,
-    const std::string &password)
+    const std::string &key)
 {
   Close();
 
@@ -228,8 +246,16 @@ HRESULT CChunkDecoder::Open(IInStream *stream, UInt64 dataOffset, const stream::
   if (memcmp(magic, kChunkMagic, sizeof(magic)) != 0)
     return S_FALSE;
 
+  // ARC4 chunks (before Inno Setup 6.4) start with a salt.
+  const bool arc4 = (chunk.encryption == stream::ARC4_MD5 || chunk.encryption == stream::ARC4_SHA1);
+  const bool xchacha20 = (chunk.encryption == stream::XChaCha20);
+  if (chunk.encryption != stream::Plaintext && !arc4 && !xchacha20)
+    return E_NOTIMPL;
+  if (xchacha20 && key.size() != crypto::xchacha20::key_size + crypto::xchacha20::nonce_size)
+    return E_NOTIMPL;
+
   char salt[8];
-  if (chunk.encryption != stream::Plaintext)
+  if (arc4)
   {
     RINOK(ReadStream_FALSE(stream, salt, sizeof(salt)))
   }
@@ -240,16 +266,18 @@ HRESULT CChunkDecoder::Open(IInStream *stream, UInt64 dataOffset, const stream::
   _limitedSpec->Init(chunk.size);
   CMyComPtr<ISequentialInStream> input = _limited;
 
-  if (chunk.encryption != stream::Plaintext)
+  if (arc4)
   {
     const bool sha1 = (chunk.encryption == stream::ARC4_SHA1);
     crypto::hasher hasher(sha1 ? crypto::SHA1 : crypto::MD5);
     hasher.update(salt, sizeof(salt));
-    hasher.update(password.c_str(), password.length());
-    const crypto::checksum key = hasher.finalize();
-    input = new CArc4InStream(input, sha1 ? key.sha1 : key.md5,
-        sha1 ? sizeof(key.sha1) : sizeof(key.md5));
+    hasher.update(key.c_str(), key.length());
+    const crypto::checksum salted = hasher.finalize();
+    input = new CArc4InStream(input, sha1 ? salted.sha1 : salted.md5,
+        sha1 ? sizeof(salted.sha1) : sizeof(salted.md5));
   }
+  else if (xchacha20)
+    input = new CXChaCha20InStream(input, key, chunk);
 
   CMyComPtr<ISequentialInStream> decoded;
   switch (chunk.compression)

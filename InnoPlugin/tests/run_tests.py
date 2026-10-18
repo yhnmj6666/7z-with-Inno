@@ -27,7 +27,8 @@ IS_WINDOWS = os.name == "nt"
 sys.path.insert(0, TESTS_DIR)
 import make_payload  # noqa: E402
 
-COMPILERS = ["5.6.1", "5.6.1-unicode", "6.0.5", "6.1.2", "6.2.2"]
+COMPILERS = ["5.6.1", "5.6.1-unicode", "6.0.5", "6.1.2", "6.2.2", "6.3.3", "6.4.3", "6.5.4",
+             "6.6.1", "6.7.3", "7.0.2-x64", "7.1.0-x64", "7.1.0-x86"]
 # Compilers whose preprocessor does not define UNICODE (ANSI installers).
 ANSI_COMPILERS = {"5.6.1"}
 # Variant -> compression method of its files, as kpidMethod names it.
@@ -42,6 +43,13 @@ VARIANTS = {
     "time-utc": "LZMA2",
     "time-local": "LZMA2",
 }
+# Encrypted variants -> first Inno Setup version that can compile them. They
+# are tested separately (test_encryption) because they need the password.
+# Before 6.4, Encryption=yes uses ARC4 from ISCrypt.dll, which the compiler
+# needs in its folder; without it the variant is skipped.
+ENCRYPTED_VARIANTS = {"encrypted": (5, 0, 0), "encrypted-full": (6, 5, 0)}
+PASSWORD = "inno-test-password"
+WRONG_PASSWORD = "wrong-password"
 # Timestamp variants -> True if they store times in UTC (TimeStampsInUTC=yes).
 TIME_VARIANTS = {"time-utc": True, "time-local": False}
 # On Linux, the client lists the timestamp variants in this time zone.
@@ -251,11 +259,33 @@ def find_iscc(compiler):
     return shutil.which("iscc-" + compiler)
 
 
-def build_corpus(args, results):
-    """Writes the payload, compiles (or reuses) the installers. Returns {(compiler, variant): exe}."""
+def compiler_version(compiler):
+    """Compiler label (e.g. "7.1.0-x64") -> (major, minor, patch)."""
+    return tuple(int(x) for x in re.match(r"(\d+)\.(\d+)\.(\d+)", compiler).groups())
+
+
+def missing_iscrypt(compiler, variant):
+    """Reason why an ARC4 variant cannot be compiled, or None."""
+    if variant not in ENCRYPTED_VARIANTS or compiler_version(compiler) >= (6, 4, 0) or IS_WINDOWS:
+        return None
+    prefix = os.environ.get("WINEPREFIX") or os.path.expanduser("~/.wine")
+    if os.path.isfile(os.path.join(prefix, "drive_c", "iscc", compiler, "ISCrypt.dll")):
+        return None
+    return "ISCrypt.dll is not installed (ARC4 encryption before Inno Setup 6.4)"
+
+
+def encrypted_variants(compiler):
+    return [v for v, first in ENCRYPTED_VARIANTS.items() if compiler_version(compiler) >= first]
+
+
+def build_corpus(args, results, encrypted=False):
+    """Writes the payload, compiles (or reuses) the installers. Returns {(compiler, variant): exe}
+    for VARIANTS, or with encrypted=True for ENCRYPTED_VARIANTS."""
     corpus = args.corpus_dir
     installers = {}
-    if args.no_compile:
+    if encrypted:
+        pass
+    elif args.no_compile:
         bad = make_payload.differences(corpus)
         results.check("payload in %s" % corpus, ["missing or different: " + ", ".join(bad)] if bad else [])
     else:
@@ -266,7 +296,7 @@ def build_corpus(args, results):
                 shutil.copyfile(os.path.join(SCRIPTS_DIR, name), os.path.join(corpus, name))
     for compiler in args.compilers:
         out_dir = os.path.join(corpus, "installers", compiler)
-        for variant in VARIANTS:
+        for variant in (encrypted_variants(compiler) if encrypted else VARIANTS):
             name = "%s %s/%s" % ("installer" if args.no_compile else "compile", compiler, variant)
             exe = os.path.join(out_dir, variant + ".exe")
             key_file = os.path.join(out_dir, variant + ".key")
@@ -277,7 +307,14 @@ def build_corpus(args, results):
                 installers[(compiler, variant)] = exe
                 continue
             if args.no_compile:
-                results.report("FAIL", name, "installer missing or built from other scripts (--no-compile)")
+                if encrypted and compiler_version(compiler) < (6, 4, 0):
+                    # Compiled only where ISCrypt.dll was available (see missing_iscrypt).
+                    results.report("SKIP", name, "not in the prebuilt corpus (ARC4 needs ISCrypt.dll)")
+                else:
+                    results.report("FAIL", name, "installer missing or built from other scripts (--no-compile)")
+                continue
+            if missing_iscrypt(compiler, variant):
+                results.report("SKIP", name, missing_iscrypt(compiler, variant))
                 continue
             iscc = find_iscc(compiler)
             if not iscc:
@@ -702,6 +739,129 @@ def test_client_damaged(args, results, client, installers, expected, damaged, pa
 
 
 # ---------------------------------------------------------------------------
+# Encryption and unsupported versions
+
+
+def encryption_name(compiler):
+    return "XChaCha20" if compiler_version(compiler) >= (6, 4, 0) else "ARC4"
+
+
+def make_unsupported(args, results, installers):
+    """A copy of the installer of the newest compiler with its setup data
+    version changed to an unknown newer one. Returns its path or None."""
+    if not installers:
+        return None
+    compiler, variant = max(installers, key=lambda k: (compiler_version(k[0]), k))
+    with open(installers[(compiler, variant)], "rb") as f:
+        data = f.read()
+    # The data version, e.g. "(7.0.0.3)", becomes "(9.9.9.9)" (same length).
+    patched, count = re.subn(rb"(Inno Setup Setup Data \()([\d.]+)(\))",
+                             lambda m: m.group(1) + re.sub(rb"\d", b"9", m.group(2)) + m.group(3), data)
+    name = "unsupported version from %s/%s" % (compiler, variant)
+    if not count:
+        results.report("FAIL", name, "no setup data version found")
+        return None
+    path = os.path.join(args.work_dir, "unsupported-version.exe")
+    with open(path, "wb") as f:
+        f.write(patched)
+    return path
+
+
+def test_client_encryption(results, client, installers, unsupported, payload):
+    for (compiler, variant), exe in sorted(installers.items()):
+        tag = "%s/%s" % (compiler, variant)
+        exp = Expected(compiler, variant)
+        full = variant == "encrypted-full"
+
+        code, objs, problems = client.run("l", exe, "-p" + PASSWORD)
+        problems += client_exit(code, objs)
+        archive = (of_type(objs, "archive") or [{}])[0]
+        items = of_type(objs, "item")
+        problems += compare_listing([(o.get("path"), o.get("size")) for o in items], exp, payload)
+        for key in ("error", "error_flags", "warning"):
+            if key in archive:
+                problems.append("archive %s: %s" % (key, archive[key]))
+        if encryption_name(compiler) not in str(archive.get("method", "")).split():
+            problems.append("archive method %r without %s" % (archive.get("method"), encryption_name(compiler)))
+        files = [o for o in items if not o["path"].startswith("embedded\\")]
+        if any(not o.get("encrypted") for o in files if o.get("size")):
+            problems.append("files with data that are not encrypted")
+        results.check("client l %s" % tag, problems, "right password")
+        indices = [o.get("index") for o in items]
+        encrypted = sorted(o.get("index") for o in files if o.get("size"))
+
+        code, objs, problems = client.run("t", exe, "-p" + PASSWORD)
+        problems += client_exit(code, objs)
+        problems += extract_problems(objs, "test", indices)
+        results.check("client t %s" % tag, problems, "right password")
+
+        if full:
+            # Without the right password, the installer opens without items
+            # and reports the encrypted headers (kpv_ErrorFlags_EncryptedHeadersError).
+            code, objs, problems = client.run("l", exe, "-p" + WRONG_PASSWORD)
+            archive = (of_type(objs, "archive") or [{}])[0]
+            if of_type(objs, "item"):
+                problems.append("%d items listed" % len(of_type(objs, "item")))
+            if not int(archive.get("error_flags", 0)) & (1 << 2):
+                problems.append("error_flags %s without EncryptedHeadersError" % archive.get("error_flags"))
+            results.check("client l %s" % tag, problems, "wrong password")
+            code, objs, problems = client.run("l", exe)
+            if code == 0 or of_type(objs, "item"):
+                problems.append("exit code %s, %d items" % (code, len(of_type(objs, "item"))))
+            results.check("client l %s" % tag, problems, "no password (callback cancels)")
+            continue
+
+        # The files with data report kWrongPassword, the others are extracted.
+        code, objs, problems = client.run("t", exe, "-p" + WRONG_PASSWORD)
+        wrong = sorted(o.get("index") for o in of_type(objs, "item_result") if o.get("result") == "wrong_password")
+        others = [o for o in of_type(objs, "item_result") if o.get("index") not in encrypted]
+        if wrong != encrypted:
+            problems.append("wrong_password for items %s, expected %s" % (wrong[:20], encrypted[:20]))
+        problems += ["%s: %s" % (o.get("path"), o.get("result")) for o in others if o.get("result") != "ok"]
+        if code == 0:
+            problems.append("exit code 0")
+        results.check("client t %s" % tag, problems, "wrong password, %d files" % len(encrypted))
+        # Without a password the callback cancels the extraction.
+        code, objs, problems = client.run("t", exe)
+        ends = of_type(objs, "extract_result")
+        if not ends or ends[0].get("hresult") != "0x80004004":
+            problems.append("extract_result %s, expected E_ABORT" % (ends[0] if ends else None))
+        results.check("client t %s" % tag, problems, "no password (callback cancels)")
+
+    if unsupported:
+        code, objs, problems = client.run("l", unsupported)
+        archive = (of_type(objs, "archive") or [{}])[0]
+        if of_type(objs, "item"):
+            problems.append("%d items listed" % len(of_type(objs, "item")))
+        if "Unsupported Inno Setup version: 9.9.9" not in str(archive.get("error")):
+            problems.append("error %r" % archive.get("error"))
+        if not int(archive.get("error_flags", 0)) & (1 << 8):
+            problems.append("error_flags %s without UnsupportedFeature" % archive.get("error_flags"))
+        results.check("client l unsupported version", problems, str(archive.get("error")))
+
+
+def test_sevenzip_encryption(results, sz, installers, unsupported):
+    for (compiler, variant), exe in sorted(installers.items()):
+        tag = "%s/%s" % (compiler, variant)
+        code, out, err = sz.run("t", "-p" + PASSWORD, sz.path(exe))
+        problems = exit_problem(code, err)
+        if not problems and "Everything is Ok" not in out:
+            problems.append("no 'Everything is Ok'")
+        results.check("7z t %s" % tag, problems, "right password")
+        code, out, err = sz.run("t", "-p" + WRONG_PASSWORD, sz.path(exe))
+        problems = exit_problem(code, err, expected=2)
+        if "Wrong password" not in out + err:
+            problems.append("no 'Wrong password' in the output")
+        results.check("7z t %s" % tag, problems, "wrong password")
+    if unsupported:
+        code, out, err = sz.run("l", sz.path(unsupported))
+        problems = exit_problem(code, err, expected=2)
+        if "Unsupported Inno Setup version" not in out + err:
+            problems.append("no 'Unsupported Inno Setup version' in the output")
+        results.check("7z l unsupported version", problems)
+
+
+# ---------------------------------------------------------------------------
 # Windows 7-Zip (natively on Windows, under Wine elsewhere)
 
 
@@ -819,11 +979,12 @@ def file_mtimes(out_dir, paths):
     return result
 
 
-def test_sevenzip(args, results, installers, expected, damaged, payload, env):
+def test_sevenzip(args, results, installers, expected, damaged, payload, env, encrypted=None, unsupported=None):
     folder = prepare_sevenzip(args, results)
     if not folder:
         return
     sz = SevenZip(folder, env)
+    test_sevenzip_encryption(results, sz, encrypted or {}, unsupported)
 
     code, out, err = sz.run("i")
     problems = exit_problem(code, err)
@@ -1018,12 +1179,16 @@ def main():
     payload = dict(make_payload.files())
     expected = {(c, v): Expected(c, v) for c in args.compilers for v in VARIANTS}
     installers = build_corpus(args, results)
+    encrypted = build_corpus(args, results, encrypted=True)
     damaged = make_damaged(args, results, installers, payload)
+    unsupported = make_unsupported(args, results, installers)
     if args.no_client:
         results.report("SKIP", "client", "--no-client")
     else:
         test_client(args, results, installers, expected, damaged, payload, env)
-    test_sevenzip(args, results, installers, expected, damaged, payload, env)
+        if os.path.isfile(args.client) and os.path.isfile(args.plugin):
+            test_client_encryption(results, Client(args, env), encrypted, unsupported, payload)
+    test_sevenzip(args, results, installers, expected, damaged, payload, env, encrypted, unsupported)
     left = sorted(os.listdir(tmp))
     results.check("no files in the temporary folder", ["left: " + ", ".join(left[:5])] if left else [])
 

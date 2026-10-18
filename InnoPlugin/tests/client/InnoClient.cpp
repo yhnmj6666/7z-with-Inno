@@ -853,6 +853,7 @@ static void PrintProps(CJsonLine &j, IInArchive *archive, UInt32 index, bool arc
     ids.AddToUniqueSorted(kpidPhySize);
     ids.AddToUniqueSorted(kpidWarning);
     ids.AddToUniqueSorted(kpidError);
+    ids.AddToUniqueSorted(kpidErrorFlags);
   }
   else
   {

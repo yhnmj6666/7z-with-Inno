@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "CPP/Common/UTFConvert.h"
+#include "CPP/7zip/IPassword.h"
 #include "CPP/7zip/Archive/IArchive.h"
 #include "CPP/7zip/Common/StreamUtils.h"
 
@@ -49,7 +50,16 @@ static const char * const kCompressionNames[] =
   { "Copy", "Deflate", "BZip2", "LZMA", "LZMA2", "Unknown" };
 static const char * const kFilterNames[] =
   { NULL, "IF4108", "IF5200", "IF5309", NULL };
-static const char * const kEncryptionName = "ARC4";
+static const char *GetEncryptionName(const stream::chunk &chunk)
+{
+  return chunk.encryption == stream::XChaCha20 ? "XChaCha20" : "ARC4";
+}
+
+// ARC4 chunks (before Inno Setup 6.4) start with a salt.
+static bool HasSalt(const stream::chunk &chunk)
+{
+  return chunk.encryption == stream::ARC4_MD5 || chunk.encryption == stream::ARC4_SHA1;
+}
 
 static unsigned GetCompressionIndex(const stream::chunk &chunk)
 {
@@ -75,7 +85,7 @@ AString GetMethodString(const setup::data_entry &entry)
   if (entry.chunk.encryption != stream::Plaintext)
   {
     s.Add_Space();
-    s += kEncryptionName;
+    s += GetEncryptionName(entry.chunk);
   }
   return s;
 }
@@ -87,6 +97,8 @@ void CInArchive::Clear()
   PhySize = 0;
   Offsets = loader::offsets();
   Info = setup::info();
+  // Not set by the constructor; read by kpidHeadersSize.
+  Info.header.header_size = 0;
   Items.clear();
   Extras.clear();
   Warnings.clear();
@@ -94,12 +106,81 @@ void CInArchive::Clear()
   IsSolid = false;
   Method.Empty();
   Comment.Empty();
+  ErrorFlags = 0;
+  ErrorMessage.clear();
+  Key.clear();
+  KeyDefined = false;
+}
+
+void CInArchive::SetError(UInt32 flags, const std::string &message)
+{
+  ErrorFlags |= flags;
+  if (!message.empty())
+    ErrorMessage = message;
+}
+
+// The PBKDF2 iteration count comes from the installer, so it is limited like
+// in the 7z and RAR5 handlers of 7-Zip (2^24). Inno Setup uses 220000.
+static const UInt32 kMaxKdfIterations = (UInt32)1 << 24;
+
+UInt32 CInArchive::GetKdfIterations() const
+{
+  const std::string &salt = Info.header.password_salt;
+  if (Info.header.password.type != crypto::PBKDF2_SHA256_XChaCha20 || salt.size() < 20)
+    return 0;
+  const unsigned char *p = (const unsigned char *)salt.data() + 16;
+  return (UInt32)p[0] | ((UInt32)p[1] << 8) | ((UInt32)p[2] << 16) | ((UInt32)p[3] << 24);
+}
+
+bool CInArchive::IsKdfSupported() const
+{
+  return GetKdfIterations() <= kMaxKdfIterations;
+}
+
+bool CInArchive::SetPassword(const UString &password)
+{
+  if (!IsKdfSupported())
+    return false;
+  AString utf8;
+  ConvertUnicodeToUTF8(password, utf8);
+  std::string key;
+  try
+  {
+    key = Info.get_key(std::string(utf8.Ptr(), utf8.Len()));
+    if (!Info.check_key(key))
+      return false;
+  }
+  catch (const std::bad_alloc &)
+  {
+    throw;
+  }
+  catch (...)
+  {
+    return false;
+  }
+  Key = key;
+  KeyDefined = true;
+  return true;
+}
+
+HRESULT CInArchive::GetPassword(IUnknown *callback)
+{
+  if (!callback)
+    return S_OK;
+  CMyComPtr<ICryptoGetTextPassword> getTextPassword;
+  callback->QueryInterface(IID_ICryptoGetTextPassword, (void **)&getTextPassword);
+  if (!getTextPassword)
+    return S_OK;
+  CMyComBSTR password;
+  RINOK(getTextPassword->CryptoGetTextPassword(&password))
+  SetPassword(UString((const wchar_t *)password ? (const wchar_t *)password : L""));
+  return S_OK;
 }
 
 UInt64 CInArchive::GetChunkEnd(const stream::chunk &chunk) const
 {
   return (UInt64)Offsets.data_offset + chunk.offset + kChunkMagicSize
-      + (chunk.encryption != stream::Plaintext ? kChunkSaltSize : 0) + chunk.size;
+      + (HasSalt(chunk) ? kChunkSaltSize : 0) + chunk.size;
 }
 
 void CInArchive::AddExtraFile(const std::string &name, const std::string *stored)
@@ -531,7 +612,7 @@ void CInArchive::ComputeSizes(const Byte *peHeaders, size_t peHeadersSize)
   // The archive method lists the methods, filters and encryption of all files.
   bool compressions[Z7_ARRAY_SIZE(kCompressionNames)] = { false };
   bool filters[Z7_ARRAY_SIZE(kFilterNames)] = { false };
-  bool encrypted = false;
+  const char *encryption = NULL;
   for (size_t i = 0; i < Items.size(); i++)
   {
     if (Items[i].FileIndex < 0)
@@ -541,7 +622,7 @@ void CInArchive::ComputeSizes(const Byte *peHeaders, size_t peHeadersSize)
     if (GetFilterName(entry.file))
       filters[(unsigned)entry.file.filter] = true;
     if (entry.chunk.encryption != stream::Plaintext)
-      encrypted = true;
+      encryption = GetEncryptionName(entry.chunk);
   }
   for (unsigned i = 0; i < Z7_ARRAY_SIZE(kCompressionNames); i++)
     if (compressions[i])
@@ -555,10 +636,10 @@ void CInArchive::ComputeSizes(const Byte *peHeaders, size_t peHeadersSize)
       Method.Add_Space_if_NotEmpty();
       Method += kFilterNames[i];
     }
-  if (encrypted)
+  if (encryption)
   {
     Method.Add_Space_if_NotEmpty();
-    Method += kEncryptionName;
+    Method += encryption;
   }
 
   // The compiler writes the size of the installer to the offset table.
@@ -581,7 +662,7 @@ void CInArchive::ComputeSizes(const Byte *peHeaders, size_t peHeadersSize)
   PhySize = phySize;
 }
 
-HRESULT CInArchive::Open(IInStream *stream)
+HRESULT CInArchive::Open(IInStream *stream, IArchiveOpenCallback *callback)
 {
   Clear();
   RINOK(InStream_GetSize_SeekToEnd(stream, FileSize))
@@ -595,6 +676,7 @@ HRESULT CInArchive::Open(IInStream *stream)
     return S_FALSE;
 
   bool ok = false;
+  HRESULT callbackRes = S_OK;
   CInStreamBuf streamBuf(stream);
   log_capture capture;
   try
@@ -604,9 +686,38 @@ HRESULT CInArchive::Open(IInStream *stream)
     if (Offsets.found_magic)
     {
       is.clear();
-      is.seekg(Offsets.header_offset);
-      Info.load(is, setup::info::entry_types::all());
-      ok = true;
+      is.seekg((std::streamoff)Offsets.header_offset);
+      Info.load_version(is);
+      if (Info.version.is_newer_than_known())
+      {
+        std::ostringstream oss;
+        oss << "Unsupported Inno Setup version: " << Info.version;
+        SetError(kpv_ErrorFlags_UnsupportedFeature, oss.str());
+      }
+      else if (Info.encryption == setup::info::EncryptionFull)
+      {
+        // The setup headers are encrypted (Encryption=full, 6.5+).
+        if (!IsKdfSupported())
+        {
+          std::ostringstream oss;
+          oss << "Unsupported key derivation: " << GetKdfIterations() << " PBKDF2 iterations";
+          SetError(kpv_ErrorFlags_UnsupportedFeature, oss.str());
+        }
+        else
+        {
+          callbackRes = GetPassword(callback);
+          if (callbackRes == S_OK)
+          {
+            if (KeyDefined)
+              Info.load_headers(is, setup::info::entry_types::all(), 0, Key);
+            else
+              SetError(kpv_ErrorFlags_EncryptedHeadersError, std::string());
+          }
+        }
+      }
+      else
+        Info.load_headers(is, setup::info::entry_types::all());
+      ok = (callbackRes == S_OK);
     }
     else
       debug("no setup loader found");
@@ -639,14 +750,19 @@ HRESULT CInArchive::Open(IInStream *stream)
   if (!ok)
   {
     Clear();
+    if (callbackRes != S_OK)
+      return callbackRes;
     // A read error or E_ABORT from the stream ends the data while parsing.
     const HRESULT res = streamBuf.GetError();
     return res != S_OK ? res : S_FALSE;
   }
 
   Stream = stream;
-  BuildExtraFiles();
-  BuildItems();
+  if (ErrorFlags == 0)
+  {
+    BuildExtraFiles();
+    BuildItems();
+  }
   ComputeSizes(peHeaders, peSize);
 
   std::ostringstream comment;

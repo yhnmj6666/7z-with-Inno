@@ -1,4 +1,4 @@
-// Origin: innoextract src/setup/header.cpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/setup/header.cpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 /*
  * Copyright (C) 2011-2020 Daniel Scharrer
@@ -56,6 +56,20 @@ STORED_ENUM_MAP(stored_log_mode, header::AppendLog,
 STORED_ENUM_MAP(stored_setup_style, header::ClassicStyle,
 	header::ClassicStyle,
 	header::ModernStyle
+);
+
+// 6.6.0+
+STORED_ENUM_MAP(stored_dark_style, header::LightStyle,
+	header::LightStyle,
+	header::DarkStyle,
+	header::DynamicStyle
+);
+
+// 6.7.0+
+STORED_ENUM_MAP(stored_control_styling, header::StyleAllControls,
+	header::StyleAllControls,
+	header::StyleAllButButtons,
+	header::StyleOnlyRequired
 );
 
 STORED_ENUM_MAP(stored_bool_auto_no_yes, header::Auto,
@@ -263,6 +277,38 @@ void header::load(std::istream & is, const version & version) {
 		changes_environment.clear();
 		changes_associations.clear();
 	}
+	if(version >= INNO_VERSION(6, 3, 0)) {
+		// Valid architectures: 'Unknown', 'x86', 'x64', 'Arm32', 'Arm64'
+		is >> util::binary_string(architectures_allowed_expr);
+		is >> util::binary_string(architectures_installed_in_64bit_mode_expr);
+	} else {
+		architectures_allowed_expr.clear();
+		architectures_installed_in_64bit_mode_expr.clear();
+	}
+	if(version >= INNO_VERSION(6, 4, 2)) {
+		is >> util::binary_string(close_applications_filter_excludes);
+	} else {
+		close_applications_filter_excludes.clear();
+	}
+	if(version >= INNO_VERSION(6, 5, 0)) {
+		is >> util::binary_string(seven_zip_library_name);
+	} else {
+		seven_zip_library_name.clear();
+	}
+	if(version >= INNO_VERSION(6, 7, 0)) {
+		// Replace the UsePrevious* flags
+		is >> util::binary_string(use_previous_app_dir);
+		is >> util::binary_string(use_previous_group);
+		is >> util::binary_string(use_previous_setup_type);
+		is >> util::binary_string(use_previous_tasks);
+		is >> util::binary_string(use_previous_user_info);
+	} else {
+		use_previous_app_dir.clear();
+		use_previous_group.clear();
+		use_previous_setup_type.clear();
+		use_previous_tasks.clear();
+		use_previous_user_info.clear();
+	}
 	if(version >= INNO_VERSION(5, 2, 5)) {
 		is >> util::ansi_string(license_text);
 		is >> util::ansi_string(info_before);
@@ -316,6 +362,11 @@ void header::load(std::istream & is, const version & version) {
 	}
 	
 	directory_count = util::load<boost::uint32_t>(is, version.bits());
+	if(version >= INNO_VERSION(6, 5, 0)) {
+		issig_key_count = util::load<boost::uint32_t>(is);
+	} else {
+		issig_key_count = 0;
+	}
 	file_count = util::load<boost::uint32_t>(is, version.bits());
 	data_entry_count = util::load<boost::uint32_t>(is, version.bits());
 	icon_count = util::load<boost::uint32_t>(is, version.bits());
@@ -325,6 +376,12 @@ void header::load(std::istream & is, const version & version) {
 	uninstall_delete_entry_count = util::load<boost::uint32_t>(is, version.bits());
 	run_entry_count = util::load<boost::uint32_t>(is, version.bits());
 	uninstall_run_entry_count = util::load<boost::uint32_t>(is, version.bits());
+	
+	if(version >= INNO_VERSION_EXT(7, 0, 0, 3)) {
+		compiled_code_version = util::load<boost::uint32_t>(is);
+	} else {
+		compiled_code_version = 0;
+	}
 	
 	boost::int32_t license_size = 0;
 	boost::int32_t info_before_size = 0;
@@ -337,8 +394,12 @@ void header::load(std::istream & is, const version & version) {
 	
 	winver.load(is, version);
 	
-	back_color = util::load<boost::uint32_t>(is);
-	if(version >= INNO_VERSION(1, 3, 3)) {
+	if(version < INNO_VERSION_EXT(6, 4, 0, 1)) {
+		back_color = util::load<boost::uint32_t>(is);
+	} else {
+		back_color = 0;
+	}
+	if(version >= INNO_VERSION(1, 3, 3) && version < INNO_VERSION_EXT(6, 4, 0, 1)) {
 		back_color2 = util::load<boost::uint32_t>(is);
 	} else {
 		back_color2 = 0;
@@ -354,14 +415,25 @@ void header::load(std::istream & is, const version & version) {
 		small_image_back_color = 0;
 	}
 	
-	if(version >= INNO_VERSION(6, 0, 0)) {
+	if(version >= INNO_VERSION(6, 0, 0) && version < INNO_VERSION(6, 6, 0)) {
 		wizard_style = stored_enum<stored_setup_style>(is).get();
+	} else if(version >= INNO_VERSION(6, 6, 0)) {
+		wizard_style = ModernStyle; // see the WizardModern flag
+	} else {
+		wizard_style = ClassicStyle;
+	}
+	if(version >= INNO_VERSION(6, 0, 0)) {
 		wizard_resize_percent_x = util::load<boost::uint32_t>(is);
 		wizard_resize_percent_y = util::load<boost::uint32_t>(is);
 	} else {
-		wizard_style = ClassicStyle;
 		wizard_resize_percent_x = 0;
 		wizard_resize_percent_y = 0;
+	}
+	
+	if(version >= INNO_VERSION(6, 6, 0)) {
+		wizard_dark_style = stored_enum<stored_dark_style>(is).get();
+	} else {
+		wizard_dark_style = LightStyle;
 	}
 	
 	if(version >= INNO_VERSION(5, 5, 7)) {
@@ -370,17 +442,58 @@ void header::load(std::istream & is, const version & version) {
 		image_alpha_format = AlphaIgnored;
 	}
 	
-	if(version < INNO_VERSION(4, 2, 0)) {
-		password.crc32 = util::load<boost::uint32_t>(is);
-		password.type = crypto::CRC32;
-	} else if(version < INNO_VERSION(5, 3, 9)) {
+	wizard_back_color = 0;
+	image_back_color_dark = small_image_back_color_dark = wizard_back_color_dark = 0;
+	if(version >= INNO_VERSION(6, 5, 2)) {
+		image_back_color = util::load<boost::uint32_t>(is);
+		small_image_back_color = util::load<boost::uint32_t>(is);
+	}
+	if(version >= INNO_VERSION(6, 7, 0)) {
+		wizard_back_color = util::load<boost::uint32_t>(is);
+	}
+	if(version >= INNO_VERSION(6, 6, 0)) {
+		image_back_color_dark = util::load<boost::uint32_t>(is);
+		small_image_back_color_dark = util::load<boost::uint32_t>(is);
+	}
+	if(version >= INNO_VERSION(6, 7, 0)) {
+		wizard_back_color_dark = util::load<boost::uint32_t>(is);
+	}
+	if(version >= INNO_VERSION(6, 6, 1)) {
+		image_opacity = util::load<boost::uint8_t>(is);
+	} else {
+		image_opacity = 255;
+	}
+	if(version >= INNO_VERSION(6, 7, 0)) {
+		back_image_opacity = util::load<boost::uint8_t>(is);
+		wizard_light_control_styling = stored_enum<stored_control_styling>(is).get();
+	} else {
+		back_image_opacity = 255;
+		wizard_light_control_styling = StyleAllControls;
+	}
+	
+	if(version >= INNO_VERSION(6, 5, 0)) {
+		// The password test is in the encryption header, see info::load
+		password.crc32 = 0;
+		password.type = crypto::None;
+	} else if(version >= INNO_VERSION(6, 4, 0)) {
+		is.read(password.check, std::streamsize(sizeof(password.check)));
+		password.type = crypto::PBKDF2_SHA256_XChaCha20;
+	} else if(version >= INNO_VERSION(5, 3, 9)) {
+		is.read(password.sha1, std::streamsize(sizeof(password.sha1)));
+		password.type = crypto::SHA1;
+	} else if(version >= INNO_VERSION(4, 2, 0)) {
 		is.read(password.md5, std::streamsize(sizeof(password.md5)));
 		password.type = crypto::MD5;
 	} else {
-		is.read(password.sha1, std::streamsize(sizeof(password.sha1)));
-		password.type = crypto::SHA1;
+		password.crc32 = util::load<boost::uint32_t>(is);
+		password.type = crypto::CRC32;
 	}
-	if(version >= INNO_VERSION(4, 2, 2)) {
+	if(version >= INNO_VERSION(6, 5, 0)) {
+		password_salt.clear();
+	} else if(version >= INNO_VERSION(6, 4, 0)) {
+		password_salt.resize(44); // PBKDF2 salt + iteration count + XChaCha20 base nonce
+		is.read(&password_salt[0], std::streamsize(password_salt.length()));
+	} else if(version >= INNO_VERSION(4, 2, 2)) {
 		password_salt.resize(8);
 		is.read(&password_salt[0], std::streamsize(password_salt.length()));
 		password_salt.insert(0, "PasswordCheckHash");
@@ -464,7 +577,10 @@ void header::load(std::istream & is, const version & version) {
 		compression = stored_enum<stored_compression_method_0>(is).get();
 	}
 	
-	if(version >= INNO_VERSION(5, 6, 0)) {
+	if(version >= INNO_VERSION(6, 3, 0)) {
+		architectures_allowed = 0; // see architectures_allowed_expr
+		architectures_installed_in_64bit_mode = 0; // see architectures_installed_in_64bit_mode_expr
+	} else if(version >= INNO_VERSION(5, 6, 0)) {
 		architectures_allowed = stored_flags<stored_architectures_1>(is).get();
 		architectures_installed_in_64bit_mode = stored_flags<stored_architectures_1>(is).get();
 	} else if(version >= INNO_VERSION(5, 1, 0)) {
@@ -495,7 +611,9 @@ void header::load(std::istream & is, const version & version) {
 		uninstall_display_size = 0;
 	}
 	
-	if(version == INNO_VERSION_EXT(5, 3, 10, 1) || version == INNO_VERSION_EXT(5, 4,  2, 1) || version == INNO_VERSION_EXT(5, 5, 0, 1)) {
+	if(version == INNO_VERSION_EXT(5, 3, 10, 1) ||
+	   version == INNO_VERSION_EXT(5, 4,  2, 1) ||
+	   version == INNO_VERSION_EXT(5, 5, 0, 1)) {
 		/*
 		 * This is needed to extract an Inno Setup variant (BlackBox v2?) that uses
 		 * the 5.3.10, 5.4.2 or 5.5.0 (unicode) data version string while the format differs:
@@ -508,164 +626,7 @@ void header::load(std::istream & is, const version & version) {
 		(void)util::load<boost::uint8_t>(is);
 	}
 	
-	stored_flag_reader<flags> flagreader(is, version.bits());
-	
-	flagreader.add(DisableStartupPrompt);
-	if(version < INNO_VERSION(5, 3, 10)) {
-		flagreader.add(Uninstallable);
-	}
-	flagreader.add(CreateAppDir);
-	if(version < INNO_VERSION(5, 3, 3)) {
-		flagreader.add(DisableDirPage);
-	}
-	if(version < INNO_VERSION(1, 3, 6)) {
-		flagreader.add(DisableDirExistsWarning);
-	}
-	if(version < INNO_VERSION(5, 3, 3)) {
-		flagreader.add(DisableProgramGroupPage);
-	}
-	flagreader.add(AllowNoIcons);
-	if(version < INNO_VERSION(3, 0, 0) || version >= INNO_VERSION(3, 0, 3)) {
-		flagreader.add(AlwaysRestart);
-	}
-	if(version < INNO_VERSION(1, 3, 3)) {
-		flagreader.add(BackSolid);
-	}
-	flagreader.add(AlwaysUsePersonalGroup);
-	flagreader.add(WindowVisible);
-	flagreader.add(WindowShowCaption);
-	flagreader.add(WindowResizable);
-	flagreader.add(WindowStartMaximized);
-	flagreader.add(EnableDirDoesntExistWarning);
-	if(version < INNO_VERSION(4, 1, 2)) {
-		flagreader.add(DisableAppendDir);
-	}
-	flagreader.add(Password);
-	if(version >= INNO_VERSION(1, 2, 6)) {
-		flagreader.add(AllowRootDirectory);
-	}
-	if(version >= INNO_VERSION(1, 2, 14)) {
-		flagreader.add(DisableFinishedPage);
-	}
-	if(version.bits() != 16) {
-		if(version < INNO_VERSION(3, 0, 4)) {
-			flagreader.add(AdminPrivilegesRequired);
-		}
-		if(version < INNO_VERSION(3, 0, 0)) {
-			flagreader.add(AlwaysCreateUninstallIcon);
-		}
-		if(version < INNO_VERSION(1, 3, 6)) {
-			flagreader.add(OverwriteUninstRegEntries);
-		}
-		if(version < INNO_VERSION(5, 6, 1)) {
-			flagreader.add(ChangesAssociations);
-		}
-	}
-	if(version >= INNO_VERSION(1, 3, 0) && version < INNO_VERSION(5, 3, 8)) {
-		flagreader.add(CreateUninstallRegKey);
-	}
-	if(version >= INNO_VERSION(1, 3, 1)) {
-		flagreader.add(UsePreviousAppDir);
-	}
-	if(version >= INNO_VERSION(1, 3, 3)) {
-		flagreader.add(BackColorHorizontal);
-	}
-	if(version >= INNO_VERSION(1, 3, 10)) {
-		flagreader.add(UsePreviousGroup);
-	}
-	if(version >= INNO_VERSION(1, 3, 20)) {
-		flagreader.add(UpdateUninstallLogAppName);
-	}
-	if(version >= INNO_VERSION(2, 0, 0) || (version.is_isx() && version >= INNO_VERSION(1, 3, 10))) {
-		flagreader.add(UsePreviousSetupType);
-	}
-	if(version >= INNO_VERSION(2, 0, 0)) {
-		flagreader.add(DisableReadyMemo);
-		flagreader.add(AlwaysShowComponentsList);
-		flagreader.add(FlatComponentsList);
-		flagreader.add(ShowComponentSizes);
-		flagreader.add(UsePreviousTasks);
-		flagreader.add(DisableReadyPage);
-	}
-	if(version >= INNO_VERSION(2, 0, 7)) {
-		flagreader.add(AlwaysShowDirOnReadyPage);
-		flagreader.add(AlwaysShowGroupOnReadyPage);
-	}
-	if(version >= INNO_VERSION(2, 0, 17) && version < INNO_VERSION(4, 1, 5)) {
-		flagreader.add(BzipUsed);
-	}
-	if(version >= INNO_VERSION(2, 0, 18)) {
-		flagreader.add(AllowUNCPath);
-	}
-	if(version >= INNO_VERSION(3, 0, 0)) {
-		flagreader.add(UserInfoPage);
-		flagreader.add(UsePreviousUserInfo);
-	}
-	if(version >= INNO_VERSION(3, 0, 1)) {
-		flagreader.add(UninstallRestartComputer);
-	}
-	if(version >= INNO_VERSION(3, 0, 3)) {
-		flagreader.add(RestartIfNeededByRun);
-	}
-	if(version >= INNO_VERSION(4, 0, 0) || (version.is_isx() && version >= INNO_VERSION(3, 0, 3))) {
-		flagreader.add(ShowTasksTreeLines);
-	}
-	if(version >= INNO_VERSION(4, 0, 0) && version < INNO_VERSION(4, 0, 10)) {
-		flagreader.add(ShowLanguageDialog);
-	}
-	if(version >= INNO_VERSION(4, 0, 1) && version < INNO_VERSION(4, 0, 10)) {
-		flagreader.add(DetectLanguageUsingLocale);
-	}
-	if(version >= INNO_VERSION(4, 0, 9)) {
-		flagreader.add(AllowCancelDuringInstall);
-	} else {
-		options |= AllowCancelDuringInstall;
-	}
-	if(version >= INNO_VERSION(4, 1, 3)) {
-		flagreader.add(WizardImageStretch);
-	}
-	if(version >= INNO_VERSION(4, 1, 8)) {
-		flagreader.add(AppendDefaultDirName);
-		flagreader.add(AppendDefaultGroupName);
-	}
-	if(version >= INNO_VERSION(4, 2, 2)) {
-		flagreader.add(EncryptionUsed);
-	}
-	if(version >= INNO_VERSION(5, 0, 4) && version < INNO_VERSION(5, 6, 1)) {
-		flagreader.add(ChangesEnvironment);
-	}
-	if(version >= INNO_VERSION(5, 1, 7) && !version.is_unicode()) {
-		flagreader.add(ShowUndisplayableLanguages);
-	}
-	if(version >= INNO_VERSION(5, 1, 13)) {
-		flagreader.add(SetupLogging);
-	}
-	if(version >= INNO_VERSION(5, 2, 1)) {
-		flagreader.add(SignedUninstaller);
-	}
-	if(version >= INNO_VERSION(5, 3, 8)) {
-		flagreader.add(UsePreviousLanguage);
-	}
-	if(version >= INNO_VERSION(5, 3, 9)) {
-		flagreader.add(DisableWelcomePage);
-	}
-	if(version >= INNO_VERSION(5, 5, 0)) {
-		flagreader.add(CloseApplications);
-		flagreader.add(RestartApplications);
-		flagreader.add(AllowNetworkDrive);
-	} else {
-		options |= AllowNetworkDrive;
-	}
-	if(version >= INNO_VERSION(5, 5, 7)) {
-		flagreader.add(ForceCloseApplications);
-	}
-	if(version >= INNO_VERSION(6, 0, 0)) {
-		flagreader.add(AppNameHasConsts);
-		flagreader.add(UsePreviousPrivileges);
-		flagreader.add(WizardResizable);
-	}
-	
-	options |= flagreader;
+	options |= load_flags(is, version);
 	
 	if(version < INNO_VERSION(3, 0, 4)) {
 		privileges_required = (options & AdminPrivilegesRequired) ? AdminPriviliges : NoPrivileges;
@@ -705,6 +666,196 @@ void header::load(std::istream & is, const version & version) {
 	
 }
 
+header::flags header::load_flags(std::istream & is, const version & version) {
+	
+	stored_flag_reader<flags> flagreader(is, version.bits());
+	
+	flagreader.add(DisableStartupPrompt);
+	if(version < INNO_VERSION(5, 3, 10)) {
+		flagreader.add(Uninstallable);
+	}
+	flagreader.add(CreateAppDir);
+	if(version < INNO_VERSION(5, 3, 3)) {
+		flagreader.add(DisableDirPage);
+	}
+	if(version < INNO_VERSION(1, 3, 6)) {
+		flagreader.add(DisableDirExistsWarning);
+	}
+	if(version < INNO_VERSION(5, 3, 3)) {
+		flagreader.add(DisableProgramGroupPage);
+	}
+	flagreader.add(AllowNoIcons);
+	if(version < INNO_VERSION(3, 0, 0) || version >= INNO_VERSION(3, 0, 3)) {
+		flagreader.add(AlwaysRestart);
+	}
+	if(version < INNO_VERSION(1, 3, 3)) {
+		flagreader.add(BackSolid);
+	}
+	flagreader.add(AlwaysUsePersonalGroup);
+	if(version < INNO_VERSION_EXT(6, 4, 0, 1)) {
+		flagreader.add(WindowVisible);
+		flagreader.add(WindowShowCaption);
+		flagreader.add(WindowResizable);
+		flagreader.add(WindowStartMaximized);
+	}
+	flagreader.add(EnableDirDoesntExistWarning);
+	if(version < INNO_VERSION(4, 1, 2)) {
+		flagreader.add(DisableAppendDir);
+	}
+	flagreader.add(Password);
+	if(version >= INNO_VERSION(1, 2, 6)) {
+		flagreader.add(AllowRootDirectory);
+	}
+	if(version >= INNO_VERSION(1, 2, 14)) {
+		flagreader.add(DisableFinishedPage);
+	}
+	if(version.bits() != 16) {
+		if(version < INNO_VERSION(3, 0, 4)) {
+			flagreader.add(AdminPrivilegesRequired);
+		}
+		if(version < INNO_VERSION(3, 0, 0)) {
+			flagreader.add(AlwaysCreateUninstallIcon);
+		}
+		if(version < INNO_VERSION(1, 3, 6)) {
+			flagreader.add(OverwriteUninstRegEntries);
+		}
+		if(version < INNO_VERSION(5, 6, 1)) {
+			flagreader.add(ChangesAssociations);
+		}
+	}
+	if(version >= INNO_VERSION(1, 3, 0) && version < INNO_VERSION(5, 3, 8)) {
+		flagreader.add(CreateUninstallRegKey);
+	}
+	// 6.7.0 replaced the UsePrevious* flags with strings
+	const bool use_previous_flags = (version < INNO_VERSION(6, 7, 0));
+	if(version >= INNO_VERSION(1, 3, 1) && use_previous_flags) {
+		flagreader.add(UsePreviousAppDir);
+	}
+	if(version >= INNO_VERSION(1, 3, 3) && version < INNO_VERSION_EXT(6, 4, 0, 1)) {
+		flagreader.add(BackColorHorizontal);
+	}
+	if(version >= INNO_VERSION(1, 3, 10) && use_previous_flags) {
+		flagreader.add(UsePreviousGroup);
+	}
+	if(version >= INNO_VERSION(1, 3, 20)) {
+		flagreader.add(UpdateUninstallLogAppName);
+	}
+	if((version >= INNO_VERSION(2, 0, 0) || (version.is_isx() && version >= INNO_VERSION(1, 3, 10)))
+	   && use_previous_flags) {
+		flagreader.add(UsePreviousSetupType);
+	}
+	if(version >= INNO_VERSION(2, 0, 0)) {
+		flagreader.add(DisableReadyMemo);
+		flagreader.add(AlwaysShowComponentsList);
+		flagreader.add(FlatComponentsList);
+		flagreader.add(ShowComponentSizes);
+		if(use_previous_flags) {
+			flagreader.add(UsePreviousTasks);
+		}
+		flagreader.add(DisableReadyPage);
+	}
+	if(version >= INNO_VERSION(2, 0, 7)) {
+		flagreader.add(AlwaysShowDirOnReadyPage);
+		flagreader.add(AlwaysShowGroupOnReadyPage);
+	}
+	if(version >= INNO_VERSION(2, 0, 17) && version < INNO_VERSION(4, 1, 5)) {
+		flagreader.add(BzipUsed);
+	}
+	if(version >= INNO_VERSION(2, 0, 18)) {
+		flagreader.add(AllowUNCPath);
+	}
+	if(version >= INNO_VERSION(3, 0, 0)) {
+		flagreader.add(UserInfoPage);
+		if(use_previous_flags) {
+			flagreader.add(UsePreviousUserInfo);
+		}
+	}
+	if(version >= INNO_VERSION(3, 0, 1)) {
+		flagreader.add(UninstallRestartComputer);
+	}
+	if(version >= INNO_VERSION(3, 0, 3)) {
+		flagreader.add(RestartIfNeededByRun);
+	}
+	if(version >= INNO_VERSION(4, 0, 0) || (version.is_isx() && version >= INNO_VERSION(3, 0, 3))) {
+		flagreader.add(ShowTasksTreeLines);
+	}
+	if(version >= INNO_VERSION(4, 0, 0) && version < INNO_VERSION(4, 0, 10)) {
+		flagreader.add(ShowLanguageDialog);
+	}
+	if(version >= INNO_VERSION(4, 0, 1) && version < INNO_VERSION(4, 0, 10)) {
+		flagreader.add(DetectLanguageUsingLocale);
+	}
+	if(version >= INNO_VERSION(4, 0, 9)) {
+		flagreader.add(AllowCancelDuringInstall);
+	} else {
+		options |= AllowCancelDuringInstall;
+	}
+	if(version >= INNO_VERSION(4, 1, 3)) {
+		flagreader.add(WizardImageStretch);
+	}
+	if(version >= INNO_VERSION(4, 1, 8)) {
+		flagreader.add(AppendDefaultDirName);
+		flagreader.add(AppendDefaultGroupName);
+	}
+	if(version >= INNO_VERSION(4, 2, 2) && version < INNO_VERSION(6, 5, 0)) {
+		// 6.5.0 and later: see the encryption header
+		flagreader.add(EncryptionUsed);
+	}
+	if(version >= INNO_VERSION(5, 0, 4) && version < INNO_VERSION(5, 6, 1)) {
+		flagreader.add(ChangesEnvironment);
+	}
+	if(version >= INNO_VERSION(5, 1, 7) && !version.is_unicode()) {
+		flagreader.add(ShowUndisplayableLanguages);
+	}
+	if(version >= INNO_VERSION(5, 1, 13)) {
+		flagreader.add(SetupLogging);
+	}
+	if(version >= INNO_VERSION(5, 2, 1)) {
+		flagreader.add(SignedUninstaller);
+	}
+	if(version >= INNO_VERSION(5, 3, 8)) {
+		flagreader.add(UsePreviousLanguage);
+	}
+	if(version >= INNO_VERSION(5, 3, 9)) {
+		flagreader.add(DisableWelcomePage);
+	}
+	if(version >= INNO_VERSION(5, 5, 0)) {
+		flagreader.add(CloseApplications);
+		flagreader.add(RestartApplications);
+		flagreader.add(AllowNetworkDrive);
+	} else {
+		options |= AllowNetworkDrive;
+	}
+	if(version >= INNO_VERSION(5, 5, 7)) {
+		flagreader.add(ForceCloseApplications);
+	}
+	if(version >= INNO_VERSION(6, 0, 0)) {
+		flagreader.add(AppNameHasConsts);
+		flagreader.add(UsePreviousPrivileges);
+		if(version < INNO_VERSION(6, 6, 0)) {
+			flagreader.add(WizardResizable);
+		}
+	}
+	if(version >= INNO_VERSION(6, 3, 0)) {
+		flagreader.add(UninstallLogging);
+	}
+	if(version >= INNO_VERSION(6, 6, 0)) {
+		flagreader.add(WizardModern);
+		flagreader.add(WizardBorderStyled);
+		flagreader.add(WizardKeepAspectRatio);
+		if(version < INNO_VERSION(6, 7, 0)) {
+			flagreader.add(WizardLightButtonsUnstyled);
+		}
+	}
+	if(version >= INNO_VERSION(6, 7, 0)) {
+		flagreader.add(RedirectionGuard);
+		flagreader.add(WizardBevelsHidden);
+		return flagreader.finalize(57); // padded to 8 bytes
+	}
+	
+	return flagreader.finalize();
+}
+
 void header::decode(util::codepage_id codepage) {
 	
 	util::to_utf8(app_name, codepage);
@@ -737,6 +888,15 @@ void header::decode(util::codepage_id codepage) {
 	util::to_utf8(setup_mutex, codepage, &lead_bytes);
 	util::to_utf8(changes_environment, codepage);
 	util::to_utf8(changes_associations, codepage);
+	util::to_utf8(architectures_allowed_expr, codepage);
+	util::to_utf8(architectures_installed_in_64bit_mode_expr, codepage);
+	util::to_utf8(close_applications_filter_excludes, codepage);
+	util::to_utf8(seven_zip_library_name, codepage);
+	util::to_utf8(use_previous_app_dir, codepage);
+	util::to_utf8(use_previous_group, codepage);
+	util::to_utf8(use_previous_setup_type, codepage);
+	util::to_utf8(use_previous_tasks, codepage);
+	util::to_utf8(use_previous_user_info, codepage);
 	
 }
 
@@ -791,6 +951,16 @@ NAMES(setup::header::flags, "Setup Option",
 	"restart applications",
 	"allow network drive",
 	"force close applications",
+	"app name has consts",
+	"use previous privileges",
+	"wizard resizable",
+	"uninstall logging",
+	"wizard modern",
+	"wizard border styled",
+	"wizard keep aspect ratio",
+	"wizard light buttons unstyled",
+	"redirection guard",
+	"wizard bevels hidden",
 	"uninstallable",
 	"disable dir page",
 	"disable program group page",
@@ -809,12 +979,13 @@ NAMES(setup::header::flags, "Setup Option",
 NAMES(setup::header::architecture_types, "Architecture",
 	"unknown",
 	"x86",
-	"amd64",
-	"IA64",
-	"ARM64",
+	"x64",
+	"Itanium",
+	"Arm32",
+	"Arm64",
 )
 
-NAMES(setup::header::privileges_required_overrides, "Priviledge Override"
+NAMES(setup::header::privileges_required_overrides, "Privilege Override",
 	"commandline",
 	"dialog",
 )
@@ -840,6 +1011,18 @@ NAMES(setup::header::log_mode, "Uninstall Log Mode",
 NAMES(setup::header::style, "Style",
 	"classic",
 	"modern",
+)
+
+NAMES(setup::header::dark_style, "Dark Style",
+	"light",
+	"dark",
+	"dynamic",
+)
+
+NAMES(setup::header::control_styling, "Light Control Styling",
+	"all",
+	"all but buttons",
+	"only required",
 )
 
 NAMES(setup::header::auto_bool, "Auto Boolean",

@@ -115,6 +115,22 @@ step_iscc() {
   if [ ${#failed[@]} -gt 0 ]; then
     echo "::warning::Missing Inno Setup compilers: ${failed[*]}"
   fi
+  # Before 6.4, Encryption=yes needs ISCrypt.dll in the compiler folder. It is
+  # downloaded separately, so where it is missing the encrypted test installers
+  # use the ARCFOUR stand-in InnoPlugin/tests/iscrypt/iscrypt.c.
+  local stub=/tmp/ISCrypt.dll
+  if i686-w64-mingw32-gcc -O2 -shared -s -Wl,--kill-at -o "$stub" \
+       "$(dirname "$0")/../../InnoPlugin/tests/iscrypt/iscrypt.c"; then
+    for label in 5.6.1 5.6.1-unicode 6.0.5 6.1.2 6.2.2 6.3.3; do
+      local dir="$WINEPREFIX/drive_c/iscc/$label"
+      if [ -d "$dir" ] && [ ! -f "$dir/ISCrypt.dll" ]; then
+        cp "$stub" "$dir/ISCrypt.dll"
+        echo "ISCrypt.dll stand-in for iscc-$label"
+      fi
+    done
+  else
+    echo "::warning::Cannot build the ISCrypt.dll stand-in"
+  fi
 }
 
 step_sources() {

@@ -1,4 +1,4 @@
-// Origin: innoextract src/crypto/md5.hpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/crypto/md5.hpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 #include "../minihead.hpp"
 /*
@@ -42,9 +42,11 @@ public:
 	
 	typedef boost::uint32_t hash_word;
 	typedef util::little_endian byte_order;
-	static const size_t offset = 0;
-	static const size_t block_size = 64;
-	static const size_t hash_size = 16;
+	enum constants {
+		offset = 0,
+		block_size = 64,
+		hash_size = 16,
+	};
 	
 	static void init(hash_word * state);
 	

@@ -1,4 +1,4 @@
-// Origin: innoextract src/crypto/hasher.hpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/crypto/hasher.hpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 #include "../minihead.hpp"
 /*
@@ -34,6 +34,7 @@
 #include "../crypto/crc32.hpp"
 #include "../crypto/md5.hpp"
 #include "../crypto/sha1.hpp"
+#include "../crypto/sha256.hpp"
 #include "../util/enum.hpp"
 
 struct checksum_uninitialized_error { };
@@ -59,6 +60,7 @@ private:
 		crypto::crc32 crc32;
 		crypto::md5 md5;
 		crypto::sha1 sha1;
+		crypto::sha256 sha256;
 	};
 	
 };

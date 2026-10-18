@@ -1,4 +1,4 @@
-// Origin: innoextract src/crypto/checksum.hpp, commit 83c1544b3f (master, 2021-12-02).
+// Origin: innoextract src/crypto/checksum.hpp, commit 6e9e34ed08 (master, 2025-02-06).
 // Modified for the 7-Zip Inno plugin.
 #include "../minihead.hpp"
 /*
@@ -47,6 +47,8 @@ enum checksum_type {
 	CRC32,
 	MD5,
 	SHA1,
+	SHA256,
+	PBKDF2_SHA256_XChaCha20
 };
 
 struct checksum {
@@ -56,6 +58,8 @@ struct checksum {
 		boost::uint32_t crc32;
 		char md5[16];
 		char sha1[20];
+		char sha256[32];
+		char check[4];
 	};
 	
 	checksum_type type;

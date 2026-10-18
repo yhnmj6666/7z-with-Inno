@@ -73,6 +73,11 @@ public:
 	 *                 A second block stream directly follows the first one and contains
 	 *                 the \ref setup::data_entry "data entries".
 	 * \param version  The version of the setup data.
+	 * \param block_size Receives the stored size of the block, including the chunk checksums.
+	 * \param key      Key and base nonce for blocks encrypted with XChaCha20
+	 *                 (Inno Setup 6.5.0 and newer with full encryption), or an empty string.
+	 * \param first_slice Value that Inno Setup XORs into the nonce for this block:
+	 *                 -2 for the first block and -3 for the second one.
 	 *
 	 * \throws block_error if the block stream header checksum was invalid,
 	 *                     or if the block compression is not supported by this build.
@@ -81,7 +86,8 @@ public:
 	 *         Reading from this stream may throw a \ref block_error if a block checksum
 	 *         was invalid.
 	 */
-	static pointer get(std::istream & base, const setup::version & version, size_t* block_size = nullptr);
+	static pointer get(std::istream & base, const setup::version & version, size_t* block_size = nullptr,
+	                   const std::string & key = std::string(), boost::uint32_t first_slice = 0);
 	
 };
 
