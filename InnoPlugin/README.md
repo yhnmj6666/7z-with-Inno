@@ -174,8 +174,11 @@ decompresses to 1 GiB), disk spanning with all slices and with a missing
 slice, other executables, and that the plugin prints nothing and writes no
 files. On Windows it runs with a prebuilt corpus
 and a 7-Zip folder. See [tests/README.md](tests/README.md). The workflow
-`.github/workflows/inno-plugin.yml` builds everything and runs the tests on
-Ubuntu (GCC, MinGW, Wine) and Windows (MSVC, official 7-Zip 26.04 x64 and x86).
+`.github/workflows/inno-plugin.yml` compiles the corpus (cached between
+runs) and builds with GCC and MinGW, then tests in parallel jobs: the test
+client, Windows 7-Zip 26.04 under Wine in groups of compilers (64-bit 7-Zip
+with all compilers, 32-bit 7-Zip with a subset), and on Windows the MSVC
+builds with the official 7-Zip 26.04 x64 and x86 on the whole corpus.
 
 ## Supported Inno Setup versions
 

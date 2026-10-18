@@ -1256,6 +1256,8 @@ def main():
                     help="payload and compiled installers, also the compile cache (default: %(default)s)")
     ap.add_argument("--no-compile", action="store_true",
                     help="use the installers in --corpus-dir as they are (prebuilt corpus, e.g. on Windows)")
+    ap.add_argument("--compile-only", action="store_true",
+                    help="only compile (or reuse) the installers in --corpus-dir, then stop")
     ap.add_argument("--compilers", default=",".join(COMPILERS),
                     help="comma-separated Inno Setup compiler labels (iscc-<label>) (default: %(default)s)")
     ap.add_argument("--work-dir", default=os.path.join(BUILD_DIR, "test-work"),
@@ -1291,6 +1293,9 @@ def main():
     expected = {(c, v): Expected(c, v) for c in args.compilers for v in VARIANTS}
     installers = build_corpus(args, results)
     encrypted = build_corpus(args, results, encrypted=True)
+    if args.compile_only:
+        print("\nSummary: " + results.summary())
+        return 1 if results.failed() else 0
     damaged = make_damaged(args, results, installers, payload)
     unsupported = make_unsupported(args, results, installers)
     if args.no_client:

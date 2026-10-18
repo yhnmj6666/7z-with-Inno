@@ -132,7 +132,8 @@ and exits with 1 if any check failed.
 | `--no-client`, `--no-sevenzip` | skip the client or the 7-Zip checks |
 | `--corpus-dir` | corpus folder (default `build/corpus`) |
 | `--no-compile` | use the installers in `--corpus-dir` as they are (their `.key` files must match the scripts) |
-| `--compilers` | comma-separated compiler labels (default: the five above) |
+| `--compile-only` | only compile the installers that are missing or out of date in `--corpus-dir`, then stop (the CI corpus job) |
+| `--compilers` | comma-separated compiler labels (default: all of the above) |
 | `--work-dir` | scratch folder, emptied on start (default `build/test-work`) |
 
 ### On Windows

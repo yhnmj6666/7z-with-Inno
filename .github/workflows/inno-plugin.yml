@@ -1,13 +1,15 @@
 name: Inno plugin
 
 # Builds the 7-Zip Inno Setup plugin in InnoPlugin/ and runs its tests (see
-# InnoPlugin/tests/README.md).
-#   ubuntu-24.04: GCC, MinGW x86_64 and MinGW i686 builds, DLL export and import
-#     checks, test corpus compiled with Inno Setup under Wine, tests with the
-#     test client and with Windows 7-Zip 26.04 (64-bit and 32-bit) under Wine.
-#   windows-2022: MSVC x64 and Win32 builds, DLL checks, tests with the MSVC test
-#     client and the official 7-Zip 26.04 (x64 and x86), using the corpus from
-#     the Ubuntu job.
+# InnoPlugin/tests/README.md). The jobs run in parallel where they can:
+#   corpus   test installers compiled with Inno Setup under Wine; restored from
+#            the cache, so only missing or outdated installers are compiled
+#   build    GCC, MinGW x86_64 and MinGW i686 builds, DLL export and import checks
+#   client   the test client (GCC build) on the whole corpus
+#   wine     Windows 7-Zip 26.04 under Wine with the MinGW DLLs: 64-bit 7-Zip in
+#            groups of compilers, 32-bit 7-Zip on a subset of the compilers
+#   windows  MSVC x64 and Win32 builds, DLL checks, the MSVC test client and the
+#            official 7-Zip 26.04 (x64 and x86) on the whole corpus
 on:
   workflow_dispatch:
   push:
@@ -35,22 +37,65 @@ env:
   SEVENZIP_X86_SHA256: 39bf65045153fc26c42fa9fe47afd8cd1b11671c7f11d031e738c9a13960c009
 
 jobs:
-  linux:
-    name: Ubuntu (GCC, MinGW, Wine)
+  corpus:
+    name: Corpus (Inno Setup under Wine)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Install packages (Wine, MinGW, build tools)
+      # The runner compiles only the installers whose scripts or payload changed
+      # (corpus_key in run_tests.py), so an older corpus is a good start.
+      - name: Restore the corpus cache
+        id: cache
+        uses: actions/cache/restore@v6
+        with:
+          path: InnoPlugin/build/corpus
+          key: corpus-${{ hashFiles('InnoPlugin/tests/corpus/**', 'InnoPlugin/tests/make_payload.py', 'InnoPlugin/tests/run_tests.py', 'InnoPlugin/tests/iscrypt/**', '.github/scripts/setup-inno-tools.sh') }}
+          restore-keys: corpus-
+
+      - name: Install packages (Wine, MinGW)
+        if: steps.cache.outputs.cache-hit != 'true'
         run: bash .github/scripts/setup-inno-tools.sh packages
 
-      - name: Install 7-Zip (Linux 7zz, Windows 7z.exe under Wine)
-        run: bash .github/scripts/setup-inno-tools.sh sevenzip
-
       - name: Install Inno Setup compilers under Wine
+        if: steps.cache.outputs.cache-hit != 'true'
         run: bash .github/scripts/setup-inno-tools.sh iscc
+
+      - name: Compile the missing or outdated installers
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: python3 InnoPlugin/tests/run_tests.py --compile-only
+
+      - name: Save the corpus cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: InnoPlugin/build/corpus
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Upload the test corpus (payload and installers)
+        uses: actions/upload-artifact@v7
+        with:
+          name: inno-corpus
+          path: InnoPlugin/build/corpus
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  build:
+    name: Build (GCC, MinGW)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install build tools (CMake, Ninja, MinGW)
+        run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+            cmake ninja-build g++ g++-mingw-w64
 
       - name: Build with GCC
         working-directory: InnoPlugin
@@ -75,32 +120,19 @@ jobs:
           python3 InnoPlugin/tests/check_dll.py
           InnoPlugin/build/mingw-x86_64/Inno.64.dll InnoPlugin/build/mingw-i686/Inno.32.dll
 
-      - name: Tests (test client, 64-bit 7-Zip under Wine with Inno.64.dll)
-        run: >
-          python3 InnoPlugin/tests/run_tests.py
-          --sevenzip-dir /opt/inno-tools/7zip-win64
-          --sevenzip-plugin InnoPlugin/build/mingw-x86_64/Inno.64.dll
-
-      - name: Tests (32-bit 7-Zip under Wine with Inno.32.dll)
-        run: |
-          curl -fsSL -o InnoPlugin/build/7z2604.exe "$SEVENZIP_URL/7z2604.exe"
-          echo "$SEVENZIP_X86_SHA256  InnoPlugin/build/7z2604.exe" | sha256sum -c -
-          7zz x -y -oInnoPlugin/build/7zip-x86 InnoPlugin/build/7z2604.exe > /dev/null
-          python3 InnoPlugin/tests/run_tests.py --no-compile --no-client \
-            --sevenzip-dir InnoPlugin/build/7zip-x86 \
-            --sevenzip-plugin InnoPlugin/build/mingw-i686/Inno.32.dll
-
-      - name: Upload the test corpus (payload and installers)
-        if: ${{ !cancelled() }}
+      - name: Upload the builds for the test jobs
         uses: actions/upload-artifact@v7
         with:
-          name: inno-corpus
-          path: InnoPlugin/build/corpus
+          name: inno-build-linux
+          path: |
+            InnoPlugin/build/linux/Inno.so
+            InnoPlugin/build/linux/inno_client
+            InnoPlugin/build/mingw-x86_64/Inno.64.dll
+            InnoPlugin/build/mingw-i686/Inno.32.dll
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
       - name: Upload the MinGW DLLs
-        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: inno-plugin-mingw
@@ -109,9 +141,102 @@ jobs:
             InnoPlugin/build/mingw-i686/Inno.32.dll
           if-no-files-found: error
 
+  client:
+    name: Test client (Linux, all compilers)
+    needs: [corpus, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Download the test corpus
+        uses: actions/download-artifact@v8
+        with:
+          name: inno-corpus
+          path: InnoPlugin/build/corpus
+
+      - name: Download the builds
+        uses: actions/download-artifact@v8
+        with:
+          name: inno-build-linux
+          path: InnoPlugin/build
+
+      - name: Tests (test client)
+        run: |
+          chmod +x InnoPlugin/build/linux/inno_client
+          python3 InnoPlugin/tests/run_tests.py --no-compile --no-sevenzip
+
+  wine:
+    name: Wine ${{ matrix.arch }} 7-Zip (Inno Setup ${{ matrix.name }})
+    needs: [corpus, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            name: 5.6.1 to 6.2.2
+            compilers: 5.6.1,5.6.1-unicode,6.0.5,6.1.2,6.2.2
+          - arch: x64
+            name: 6.3.3 to 6.6.1
+            compilers: 6.3.3,6.4.3,6.5.4,6.6.1
+          - arch: x64
+            name: 6.7.3 to 7.1.0
+            compilers: 6.7.3,7.0.2-x64,7.1.0-x64,7.1.0-x86
+          # 32-bit 7-Zip only with a compiler from each format group; the
+          # windows job tests 32-bit 7-Zip on the whole corpus.
+          - arch: x86
+            name: 5.6.1, 6.2.2, 6.4.3, 7.1.0
+            compilers: 5.6.1,6.2.2,6.4.3,7.1.0-x86
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Wine and 7-Zip
+        run: |
+          bash .github/scripts/setup-inno-tools.sh packages
+          bash .github/scripts/setup-inno-tools.sh sevenzip
+
+      - name: Download the test corpus
+        uses: actions/download-artifact@v8
+        with:
+          name: inno-corpus
+          path: InnoPlugin/build/corpus
+
+      - name: Download the builds
+        uses: actions/download-artifact@v8
+        with:
+          name: inno-build-linux
+          path: InnoPlugin/build
+
+      - name: Get the 32-bit 7-Zip 26.04
+        if: matrix.arch == 'x86'
+        run: |
+          curl -fsSL -o InnoPlugin/build/7z2604.exe "$SEVENZIP_URL/7z2604.exe"
+          echo "$SEVENZIP_X86_SHA256  InnoPlugin/build/7z2604.exe" | sha256sum -c -
+          7zz x -y -oInnoPlugin/build/7zip-x86 InnoPlugin/build/7z2604.exe > /dev/null
+
+      # One Wine server for all 7-Zip runs, instead of one per run.
+      - name: Start a persistent Wine server
+        run: |
+          wineserver -w
+          wineserver -p
+
+      - name: Tests (7-Zip under Wine)
+        run: |
+          if [ "${{ matrix.arch }}" = x64 ]; then
+            dir=/opt/inno-tools/7zip-win64 dll=InnoPlugin/build/mingw-x86_64/Inno.64.dll
+          else
+            dir=InnoPlugin/build/7zip-x86 dll=InnoPlugin/build/mingw-i686/Inno.32.dll
+          fi
+          python3 InnoPlugin/tests/run_tests.py --no-compile --no-client \
+            --compilers "${{ matrix.compilers }}" --sevenzip-dir "$dir" --sevenzip-plugin "$dll"
+
   windows:
     name: Windows (MSVC, official 7-Zip)
-    needs: linux
+    needs: corpus
     runs-on: windows-2022
     timeout-minutes: 45
     defaults:
@@ -121,7 +246,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Download the test corpus from the Ubuntu job
+      - name: Download the test corpus
         uses: actions/download-artifact@v8
         with:
           name: inno-corpus
