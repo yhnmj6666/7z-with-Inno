@@ -57,7 +57,7 @@ FEATURES = {
     "GERMAN": (4, 2, 7),        # compiler:Languages\German.isl
     "ENCRYPTION": (4, 2, 7),    # Encryption (with ISCrypt.dll)
     "CHECK": (5, 1, 14),        # Check: Is64BitInstallMode, IsWin64, FileExists(); Flags: 32bit, 64bit
-    "LZMA2": (5, 3, 11),        # Compression=lzma2
+    "LZMA2": (5, 3, 9),         # Compression=lzma2
     "ARM64": (5, 6, 0),         # Check: IsARM64
 }
 # Corpus variants; the scripts set the compression method (see Expected).

@@ -5,15 +5,17 @@
 | `run_tests.py` | test runner |
 | `make_payload.py` | deterministic payload generator (the test oracle) |
 | `corpus/*.iss` | Inno Setup scripts for the test installers |
+| `old-versions.txt` | the installers of the old Inno Setup versions, with their SHA-256 |
 | `client/InnoClient.cpp` | test client (`inno_client`), built with the plugin |
 | `check_dll.py` | checks the exports and imports of the plugin DLLs |
 
 ## Running the tests
 
 On Linux, in the agent environment or the CI jobs (see
-`.github/scripts/setup-inno-tools.sh` for the `iscc-<version>` wrappers and
-Windows 7-Zip under Wine), build with GCC and MinGW x86_64 as described in
-`../README.md`, then run from the repository root:
+`.github/scripts/setup-inno-tools.sh` for the `iscc-<version>` wrappers, the
+old Inno Setup versions in `/opt/inno-tools/old` and Windows 7-Zip under
+Wine), build with GCC and MinGW x86_64 as described in `../README.md`, then
+run from the repository root:
 
 ```
 python3 InnoPlugin/tests/run_tests.py
@@ -22,21 +24,40 @@ python3 InnoPlugin/tests/run_tests.py
 The runner:
 
 1. Writes the payload to `build/corpus/payload/` and compiles every variant
-   script in `corpus/` (all but `common.iss` and `timestamps.iss`, listed in
-   `VARIANTS` in `run_tests.py`) with every compiler (`COMPILERS`:
-   `iscc-5.6.1` (ANSI), `iscc-5.6.1-unicode`, `iscc-6.0.5` to `iscc-6.7.3`,
+   script in `corpus/` (listed in `VARIANTS` in `run_tests.py`; the others
+   are included by them) with every compiler (`COMPILERS`: `iscc-5.6.1`
+   (ANSI), `iscc-5.6.1-unicode`, `iscc-6.0.5` to `iscc-6.7.3`,
    `iscc-7.0.2-x64`, `iscc-7.1.0-x64` and `iscc-7.1.0-x86`), and the
    encrypted variants (`ENCRYPTED_VARIANTS`: `encrypted.iss` with
-   `Encryption=yes`, `encrypted-full.iss` with `Encryption=full` from 6.5,
-   password `inno-test-password`), with
+   `Encryption=yes` from 4.2.7, `encrypted-full.iss` with `Encryption=full`
+   from 6.5, password `inno-test-password`), with
    `TZ=UTC`, into `build/corpus/installers/<compiler>/<variant>.exe`. The
    disk-spanning variant (`SPANNED_VARIANTS`: `spanned.iss`, with
    `DiskSliceSize` and the extra file `spanned/big.bin`) also writes the
-   slices `spanned-1.bin`, `spanned-2.bin`, ... (at least 3). Each
+   slices `spanned-1.bin`, `spanned-2.bin`, ... (`spanned.1`, ... before
+   Inno Setup 2.0; at least 3). Each
    installer has a `.key` file with a hash of the compiler name, the scripts
    and `make_payload.py`; an installer is compiled again only when its key
    changes. Installers are never committed.
-2. Writes damaged copies of some installers to `damaged/` in the work folder:
+
+   The old compilers (`OLD_COMPILERS`: `iscc-1.3.26`, `iscc-2.0.19`,
+   `iscc-3.0.7`, `iscc-4.0.8`, `iscc-4.0.11`, `iscc-4.1.5`, `iscc-4.1.8`,
+   `iscc-4.2.7`, `iscc-5.1.14`, `iscc-5.2.3`, `iscc-5.3.8` and
+   `iscc-5.5.9`, the last two also `-unicode`) have no preprocessor, and
+   lack many script features. For them the runner applies the preprocessor
+   lines itself (see [Corpus](#corpus)) and writes the plain script to
+   `installers/<compiler>/<variant>.iss`, which it compiles without command
+   line switches. It builds only the variants whose features the compiler
+   has (`VARIANT_FEATURES`; for example LZMA from 4.1.5, `TimeStampRounding=0`
+   for the `time-*` variants from 4.1.5, LZMA2 from 5.3.9).
+
+   It also copies the installers of the old Inno Setup versions
+   (`old-versions.txt`; 1.2.16 to 5.6.1, downloaded by
+   `setup-inno-tools.sh old` to `--old-dir`) to `build/corpus/old/`, and
+   writes what innoextract extracts from each (`--dump --collisions
+   rename-all`: path, size and SHA-256 of every file) to `<name>.json`.
+2. Writes damaged copies of some installers of the `COMPILERS` to `damaged/`
+   in the work folder:
    `none.exe` with one bit flipped inside `data/random.bin` (`stored`),
    `lzma-solid.exe` with one byte changed in the middle of its solid chunk
    (`solid`), cut in the middle of that chunk (`truncated`), and cut inside
@@ -46,8 +67,11 @@ The runner:
    then for every installer:
    - `l`: the listing (below), the physical size equals the file size, no
      archive error or warning;
-   - the methods: the variant's method, plus `IF5309` for `bin/calls.exe`
-     and in the archive method when the data is compressed;
+   - the methods: the method of the variant's `Compression` directive (ZIP
+     before Inno Setup 2.0, and for `none` before 4.2.5, which stores zlib
+     streams), plus the call instruction filter of the compiler for
+     `bin/calls.exe` and in the archive method when the data is compressed:
+     `IF4108` from 4.1.8, `IF5200` from 5.2.0, `IF5309` from 5.3.9;
    - the timestamps of the `time-*` variants (below);
    - `x` and `t`: every item reports `ok` once, the files match the payload,
      and the progress total equals the sum of the item sizes, completed
@@ -82,6 +106,12 @@ The runner:
    installs the official DLL, checked by its SHA-256, or a stand-in built from
    `iscrypt/iscrypt.c` when the download fails; without either, these
    installers are skipped.
+
+   Then the old installers: `l` (no archive error or warning, the physical
+   size), `t` (every item `ok`, every stored checksum verified), and `x`,
+   whose files must equal what innoextract extracts: the same contents, and
+   the same paths without the leading folders for the same destination and
+   without innoextract's renaming. Items under `embedded\` are not compared.
 4. Windows 7-Zip, when a 7-Zip folder and a plugin DLL are given or found
    (default: `/opt/inno-tools/7zip-win64` and
    `build/mingw-x86_64/Inno.64.dll`): the runner copies `7z.exe`, `7z.dll`
@@ -95,7 +125,8 @@ The runner:
    `x` of `stored` extracts all files except `data/random.bin`. Executables
    that are not Inno installers still open with 7-Zip's own handlers:
    `7z.exe` lists as `PE`, and a 7z SFX (`7z.sfx` plus a `.7z` archive made
-   with `7zz`) lists as `7z`. On Linux, 7-Zip runs under Wine.
+   with `7zz`) lists as `7z`. The old installers: `l -slt`, `t` and `x`
+   (compared with innoextract, as above). On Linux, 7-Zip runs under Wine.
 5. Checks that the temporary folder of the programs it started is empty: the
    runner sets `TMP`, `TEMP` and `TMPDIR` to `tmp` in the work folder and
    removes `INNO_PLUGIN_LOG` from the environment (under Wine, 7-Zip keeps
@@ -119,8 +150,25 @@ uses the current offset of the time zone: the runner starts the Linux client
 with `TZ=America/New_York`, and on Windows (and for 7-Zip under Wine) uses
 the system time zone.
 
-The runner prints one line per check (`PASS`, `FAIL`, `SKIP`) and a summary,
-and exits with 1 if any check failed.
+The runner prints one line per check (`PASS`, `FAIL`, `SKIP`, `XFAIL`) and a
+summary, and exits with 1 if any check failed.
+
+### Known issues
+
+`KNOWN_ISSUES` in `run_tests.py` lists the plugin problems that the tests
+show (see the Known limitations in `../README.md`). A check of an installer
+that has a known issue reports `XFAIL` while the problem shows; once it no
+longer shows, the check fails until the issue is removed from
+`KNOWN_ISSUES` and the README:
+
+| Issue | Installers | Symptom |
+|---|---|---|
+| `uninstaller` | old installers before 5.0 | the uninstaller is an item with an empty path (the client does not extract it, 7-Zip names it after the archive) |
+| `codepage` | ANSI old installers from 4.2.1 | `Unknown data while converting from CP<n> to UTF-8.` (archive warning) |
+| `slices-1.3` | `1.3.26/spanned` | `Missing slice: spanned-1.bin`; the other checks of this installer are skipped |
+
+The installers of the old compilers before 5.0 set `Uninstallable=no`, so
+they have no uninstaller item.
 
 ### Options
 
@@ -132,16 +180,18 @@ and exits with 1 if any check failed.
 | `--no-client`, `--no-sevenzip` | skip the client or the 7-Zip checks |
 | `--corpus-dir` | corpus folder (default `build/corpus`) |
 | `--no-compile` | use the installers in `--corpus-dir` as they are (their `.key` files must match the scripts) |
-| `--compile-only` | only compile the installers that are missing or out of date in `--corpus-dir`, then stop (the CI corpus job) |
-| `--compilers` | comma-separated compiler labels (default: all of the above) |
+| `--compile-only` | only compile the installers that are missing or out of date in `--corpus-dir`, and prepare the old installers, then stop (the CI corpus job) |
+| `--compilers` | comma-separated compiler labels (default: all of the above, `COMPILERS` and `OLD_COMPILERS`) |
+| `--old-installers` | old installers to test: `all` (default), `none`, or comma-separated major versions such as `1,2,3,4` |
+| `--old-dir` | the downloaded old installers, to prepare the corpus (default `/opt/inno-tools/old` on Linux) |
 | `--work-dir` | scratch folder, emptied on start (default `build/test-work`) |
 
 ### On Windows
 
 Inno Setup is not needed on Windows: take the corpus from a Linux run (the
-CI artifact `inno-corpus`, which contains `payload/` and `installers/`) and
-pass it with `--no-compile`. With the plugin copied into the `Formats` folder
-of a 7-Zip installation or of an extracted 7-Zip installer:
+CI artifact `inno-corpus`, which contains `payload/`, `installers/` and
+`old/`) and pass it with `--no-compile`. With the plugin copied into the
+`Formats` folder of a 7-Zip installation or of an extracted 7-Zip installer:
 
 ```
 python InnoPlugin\tests\run_tests.py --no-compile --corpus-dir <corpus folder> ^
@@ -157,9 +207,22 @@ Use the `Win32` build with 32-bit 7-Zip.
 `corpus/common.iss` holds the payload and the `[Files]` entries. The variant
 scripts cover solid LZMA, non-solid LZMA2, stored (`none`), and both solid and
 non-solid ZIP and BZIP2 compression. Each sets the compression options and
-includes `common.iss`. `time-utc.iss` and `time-local.iss` include
-`timestamps.iss`, which installs two files with fixed modification times
-(winter and summer) with `TimeStampsInUTC=yes` and `no`.
+includes `common.iss`; `spanned.iss` and `encrypted.iss` take the best method
+of the compiler from `compression.iss` (LZMA2, or LZMA or ZIP for old
+compilers). `time-utc.iss` and `time-local.iss` include `timestamps.iss`,
+which installs two files with fixed modification times (winter and summer)
+with `TimeStampsInUTC=yes` and `no`.
+
+For the old compilers the runner defines `SMALL_CORPUS`, which leaves
+`data/random.bin` out, and `NO_<feature>` for every feature in `FEATURES`
+that the compiler lacks: `COMPRESSION` (before 2.0 only zlib, without the
+`Compression` directive), `COMPONENTS`, `RECURSE`, `SOLID`, `SLICES` (before
+4.0 disk spanning uses `DiskSize`), `CODE`, `LANGUAGES`, `UTC`, `LZMA`,
+`ROUNDING`, `GERMAN`, `ENCRYPTION`, `CHECK` (the `Check` functions for 64-bit
+installs and the `32bit` and `64bit` flags), `LZMA2` and `ARM64`. The
+scripts leave out or replace what the compiler cannot compile. In the plain
+script it adds to `[Setup]` the folders, `OutputBaseFilename`, `AppVerName`
+(required by the old versions), and before 5.0 `Uninstallable=no`.
 
 The payload (`make_payload.py`) contains:
 
@@ -190,11 +253,12 @@ format:
 - `; expect: <item path>` before an entry gives its item path, for entries
   listed with leading folders (destinations that are not unique, and
   entries with an architecture);
-- the preprocessor directives the runner understands: `#include`, `#define`,
-  `#ifdef`, `#ifndef`, `#else` and `#endif` (`UNICODE` is defined for the
+- the preprocessor directives the runner understands: `#include`,
+  `#define` (with a quoted value or none), `#ifdef`, `#ifndef`, `#else` and
+  `#endif`, and `{#name}` outside comments (`UNICODE` is defined for the
   Unicode compilers); others make it fail;
-- the languages in `[Languages]` (`default` without that section) give the
-  expected `embedded\<name>.isl` items.
+- the languages in `[Languages]` (`default` without that section, none
+  before Inno Setup 2.0) give the expected `embedded\<name>.isl` items.
 
 ## Test client
 
@@ -216,9 +280,9 @@ line: `format` (`i`), `archive` and `item` (`l`), `item_result` and `skipped`
 for each item, and a final `extract_result` (`t` and `x`) with the numbers
 of items, errors and skipped items and the progress `total`, the last
 `completed` value and whether it ever decreased (`completed_decreased`).
-Extraction rejects absolute paths and `..`, and replaces characters that
-Windows does not allow in file names with `_`. Exit codes: 0 success, 1
-usage or plugin error, 2 the archive cannot be opened, 3
+Extraction rejects absolute paths, `..` and empty paths, and replaces
+characters that Windows does not allow in file names with `_`. Exit codes: 0
+success, 1 usage or plugin error, 2 the archive cannot be opened, 3
 `IInArchive::Extract` failed, 4 some items reported errors.
 
 ## DLL check
