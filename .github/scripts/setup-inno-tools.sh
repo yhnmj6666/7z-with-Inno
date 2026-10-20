@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Prepares the Ubuntu environment of the GitHub Copilot cloud agent for the Inno Setup plugin work.
 # Called step by step from .github/workflows/copilot-setup-steps.yml:
-#   setup-inno-tools.sh packages | sevenzip | iscc | sources | innoextract | smoke
+#   setup-inno-tools.sh packages | sevenzip | iscc | old | sources | innoextract | smoke
 #
 # Installed tools (documented in .github/prompts/inno-plugin-refactor.prompt.md):
 #   iscc-<version>        Inno Setup command-line compilers running under Wine
+#   iscc-<old version>    old compilers (1.3.26 to 5.5.9) unpacked from the installers below
+#   /opt/inno-tools/old   installers of the old Inno Setup versions (InnoPlugin/tests/old-versions.txt)
 #   innoextract           innoextract 1.9 from Ubuntu
 #   innoextract-master    innoextract built from the pinned master commit below
 #   7zz                   7-Zip for Linux
@@ -19,6 +21,11 @@ SEVENZIP_TAG=26.04
 INNOEXTRACT_COMMIT=6e9e34ed0876014fdb46e684103ef8c3605e382e
 ISCRYPT_URLS=(https://jrsoftware.org/download.php/iscrypt.dll https://files.innosetup.nl/ISCrypt.dll)
 ISCRYPT_SHA256=2f6294f9aa09f59a574b5dcd33be54e16b39377984f3d5658cda44950fa0f8fc
+# Old Inno Setup versions: folder, file name and SHA-256 of each installer.
+OLD_LIST="$(dirname "$0")/../../InnoPlugin/tests/old-versions.txt"
+OLD_URL=https://files.jrsoftware.org/is
+# The old compilers of run_tests.py (OLD_COMPILERS), unpacked from the installers.
+OLD_ISCC=(1.3.26 2.0.19 3.0.7 4.0.8 4.0.11 4.1.5 4.1.8 4.2.7 5.1.14 5.2.3 5.3.8 5.3.8-unicode 5.5.9 5.5.9-unicode)
 
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
 export WINEDEBUG=-all
@@ -80,6 +87,65 @@ EOF
   sudo install -m 755 "/tmp/$name" "/usr/local/bin/$name"
 }
 
+# Wrapper for Compil32.exe /cc (Inno Setup 1.3 has no ISCC.exe) that compiles
+# the script given as the only argument. Compil32 shows errors in a dialog and
+# still exits with 0, so it runs with a time limit; without an X display
+# (DISPLAY) it gets a virtual one.
+write_compil32_wrapper() {
+  local name=$1 exe=$2
+  cat > "/tmp/$name" <<EOF
+#!/usr/bin/env bash
+export WINEPREFIX="\${WINEPREFIX:-\$HOME/.wine}" WINEDEBUG="\${WINEDEBUG:--all}"
+script="\$(winepath -w "\$1")"
+if [ -n "\${DISPLAY:-}" ]; then
+  exec timeout -k 10 120 wine '$exe' /cc "\$script"
+fi
+exec xvfb-run -a timeout -k 10 120 wine '$exe' /cc "\$script"
+EOF
+  sudo install -m 755 "/tmp/$name" "/usr/local/bin/$name"
+}
+
+# Before 6.4, Encryption=yes needs ISCrypt.dll in the compiler folder. Installs
+# the official DLL, checked by its SHA-256, into the folders of the compilers
+# given as arguments; only if it cannot be downloaded, builds the ARCFOUR
+# stand-in InnoPlugin/tests/iscrypt/iscrypt.c instead.
+install_iscrypt() {
+  local iscrypt=/tmp/ISCrypt.dll kind="" url label
+  if [ -f "$iscrypt" ] && [ -f "$iscrypt.kind" ]; then
+    kind=$(cat "$iscrypt.kind")
+  fi
+  if [ -z "$kind" ]; then
+    for url in "${ISCRYPT_URLS[@]}"; do
+      if ! curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$iscrypt" "$url"; then
+        echo "::warning::Cannot download ISCrypt.dll from $url"
+      elif [ "$(sha256sum "$iscrypt" | cut -d' ' -f1)" != "$ISCRYPT_SHA256" ]; then
+        echo "::warning::ISCrypt.dll from $url has an unexpected SHA-256"
+      else
+        kind=official
+        break
+      fi
+    done
+  fi
+  if [ -z "$kind" ]; then
+    echo "::warning::The official ISCrypt.dll is not available, building the stand-in"
+    kind=stand-in
+    if ! i686-w64-mingw32-gcc -O2 -shared -s -Wl,--kill-at -o "$iscrypt" \
+         "$(dirname "$0")/../../InnoPlugin/tests/iscrypt/iscrypt.c"; then
+      echo "::warning::Cannot build the ISCrypt.dll stand-in"
+      rm -f "$iscrypt"
+      return 0
+    fi
+  fi
+  echo "$kind" > "$iscrypt.kind"
+  for label in "$@"; do
+    local dir="$WINEPREFIX/drive_c/iscc/$label"
+    if [ -d "$dir" ]; then
+      cp "$iscrypt" "$dir/ISCrypt.dll"
+      echo "ISCrypt.dll ($kind) for iscc-$label"
+    fi
+  done
+}
+
 step_sevenzip() {
   prepare_dirs
   local base="https://github.com/ip7z/7zip/releases/download/$SEVENZIP_TAG"
@@ -118,36 +184,54 @@ step_iscc() {
   if [ ${#failed[@]} -gt 0 ]; then
     echo "::warning::Missing Inno Setup compilers: ${failed[*]}"
   fi
-  # Before 6.4, Encryption=yes needs ISCrypt.dll in the compiler folder. Install
-  # the official DLL, checked by its SHA-256; only if it cannot be downloaded,
-  # build the ARCFOUR stand-in InnoPlugin/tests/iscrypt/iscrypt.c instead.
-  local iscrypt=/tmp/ISCrypt.dll kind="" url
-  for url in "${ISCRYPT_URLS[@]}"; do
-    if ! curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$iscrypt" "$url"; then
-      echo "::warning::Cannot download ISCrypt.dll from $url"
-    elif [ "$(sha256sum "$iscrypt" | cut -d' ' -f1)" != "$ISCRYPT_SHA256" ]; then
-      echo "::warning::ISCrypt.dll from $url has an unexpected SHA-256"
+  install_iscrypt 5.6.1 5.6.1-unicode 6.0.5 6.1.2 6.2.2 6.3.3
+}
+
+# Downloads the installers of the old Inno Setup versions (OLD_LIST) to
+# $TOOLS/old, checked by their SHA-256, and unpacks the old compilers
+# (OLD_ISCC) from them with innoextract instead of running their installers.
+step_old() {
+  prepare_dirs
+  mkdir -p "$TOOLS/old"
+  local failed=() folder name sha file label
+  while read -r folder name sha; do
+    case "$folder" in ''|\#*) continue ;; esac
+    file="$TOOLS/old/$name"
+    if [ -f "$file" ] && [ "$(sha256sum "$file" | cut -d' ' -f1)" = "$sha" ]; then
+      continue
+    fi
+    if ! curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$file" "$OLD_URL/$folder/$name" \
+       || [ "$(sha256sum "$file" | cut -d' ' -f1)" != "$sha" ]; then
+      rm -f "$file"
+      failed+=("$name")
+    fi
+  done < "$OLD_LIST"
+  echo "$(find "$TOOLS/old" -name '*.exe' | wc -l) old installers in $TOOLS/old"
+  for label in "${OLD_ISCC[@]}"; do
+    local src="" dir="$WINEPREFIX/drive_c/iscc/$label" tmp="/tmp/old-$label"
+    for name in "isetup-$label.exe" "innosetup-$label.exe"; do
+      if [ -f "$TOOLS/old/$name" ]; then src="$TOOLS/old/$name"; fi
+    done
+    rm -rf "$tmp" "$dir"
+    mkdir -p "$tmp" "$(dirname "$dir")"
+    if [ -n "$src" ] && innoextract -e -s -p0 -d "$tmp" "$src" && [ -d "$tmp/app" ]; then
+      mv "$tmp/app" "$dir"
+      if [ -f "$dir/ISCC.exe" ]; then
+        write_wine_wrapper "iscc-$label" "C:\\iscc\\$label\\ISCC.exe"
+      else
+        write_compil32_wrapper "iscc-$label" "C:\\iscc\\$label\\compil32.exe"
+      fi
+      echo "unpacked iscc-$label"
     else
-      kind=official
-      break
+      failed+=("iscc-$label")
     fi
+    rm -rf "$tmp"
   done
-  if [ -z "$kind" ]; then
-    echo "::warning::The official ISCrypt.dll is not available, building the stand-in"
-    kind=stand-in
-    if ! i686-w64-mingw32-gcc -O2 -shared -s -Wl,--kill-at -o "$iscrypt" \
-         "$(dirname "$0")/../../InnoPlugin/tests/iscrypt/iscrypt.c"; then
-      echo "::warning::Cannot build the ISCrypt.dll stand-in"
-      return 0
-    fi
+  if [ ${#failed[@]} -gt 0 ]; then
+    echo "::warning::Old Inno Setup versions missing: ${failed[*]}"
   fi
-  for label in 5.6.1 5.6.1-unicode 6.0.5 6.1.2 6.2.2 6.3.3; do
-    local dir="$WINEPREFIX/drive_c/iscc/$label"
-    if [ -d "$dir" ]; then
-      cp "$iscrypt" "$dir/ISCrypt.dll"
-      echo "ISCrypt.dll ($kind) for iscc-$label"
-    fi
-  done
+  # Compilers without Encryption ignore the DLL.
+  install_iscrypt "${OLD_ISCC[@]}"
 }
 
 step_sources() {
@@ -198,8 +282,9 @@ case "${1:-}" in
   packages) step_packages ;;
   sevenzip) step_sevenzip ;;
   iscc) step_iscc ;;
+  old) step_old ;;
   sources) step_sources ;;
   innoextract) step_innoextract ;;
   smoke) step_smoke ;;
-  *) echo "usage: $0 packages|sevenzip|iscc|sources|innoextract|smoke" >&2; exit 2 ;;
+  *) echo "usage: $0 packages|sevenzip|iscc|old|sources|innoextract|smoke" >&2; exit 2 ;;
 esac
