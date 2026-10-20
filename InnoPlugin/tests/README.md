@@ -109,9 +109,11 @@ The runner:
 
    Then the old installers: `l` (no archive error or warning, the physical
    size), `t` (every item `ok`, every stored checksum verified), and `x`,
-   whose files must equal what innoextract extracts: the same contents, and
-   the same paths without the leading folders for the same destination and
-   without innoextract's renaming. Items under `embedded\` are not compared.
+   whose files must equal what innoextract extracts: for every destination
+   (the path without the leading folders for the same destination and
+   without innoextract's renaming) the same number of files with the same
+   contents, and leading folders only where innoextract renames too. Items
+   under `embedded\` are not compared.
 4. Windows 7-Zip, when a 7-Zip folder and a plugin DLL are given or found
    (default: `/opt/inno-tools/7zip-win64` and
    `build/mingw-x86_64/Inno.64.dll`): the runner copies `7z.exe`, `7z.dll`
@@ -181,7 +183,7 @@ they have no uninstaller item.
 | `--corpus-dir` | corpus folder (default `build/corpus`) |
 | `--no-compile` | use the installers in `--corpus-dir` as they are (their `.key` files must match the scripts) |
 | `--compile-only` | only compile the installers that are missing or out of date in `--corpus-dir`, and prepare the old installers, then stop (the CI corpus job) |
-| `--compilers` | comma-separated compiler labels (default: all of the above, `COMPILERS` and `OLD_COMPILERS`) |
+| `--compilers` | comma-separated compiler labels; `modern` and `old` stand for all of `COMPILERS` and of `OLD_COMPILERS` (default `modern,old`) |
 | `--old-installers` | old installers to test: `all` (default), `none`, or comma-separated major versions such as `1,2,3,4` |
 | `--old-dir` | the downloaded old installers, to prepare the corpus (default `/opt/inno-tools/old` on Linux) |
 | `--work-dir` | scratch folder, emptied on start (default `build/test-work`) |

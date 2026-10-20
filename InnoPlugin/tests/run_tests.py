@@ -1224,28 +1224,33 @@ def build_old(args, results):
 
 def manifest_problems(out_dir, exe, skip=()):
     """Compares an extracted folder with the manifest of an old installer (see
-    build_old): the same file contents, and the same paths without the leading
-    folders for the same destination and innoextract's renaming. Items under
-    embedded\\ and the paths in skip are not compared."""
+    build_old): for every destination (the path without the leading folders
+    for the same destination, and without innoextract's renaming), the same
+    number of files with the same contents. Leading folders are allowed only
+    where innoextract renames too. Items under embedded\\ and the paths in
+    skip are not compared."""
     with open(exe + ".json") as f:
         manifest = json.load(f)
-    got = {p: v for p, v in files_with_hashes(out_dir).items() if p.split("\\")[0] != "embedded" and p not in skip}
-    want = {p: (s, h) for p, s, h in manifest["files"]}
-    problems = []
-    missing = collections.Counter(want.values()) - collections.Counter(got.values())
-    extra = collections.Counter(got.values()) - collections.Counter(want.values())
-    if missing:
-        problems.append("%d files missing or different, e.g. %s" % (
-            sum(missing.values()), sorted(p for p, v in want.items() if v in missing)[:3]))
-    if extra:
-        problems.append("%d files that innoextract does not extract, e.g. %s" % (
-            sum(extra.values()), sorted(p for p, v in got.items() if v in extra)[:3]))
-    got_paths = collections.Counter("\\".join(c for c in p.lower().split("\\") if not COLLISION_FOLDER.match(c))
-                                    for p in got)
-    want_paths = collections.Counter("\\".join(fs_components(RENAME_SUFFIX.sub("", p))).lower() for p in want)
-    if got_paths != want_paths:
-        problems.append("paths differ from innoextract: %s, innoextract %s" % (
-            sorted((got_paths - want_paths).elements())[:3], sorted((want_paths - got_paths).elements())[:3]))
+    want, renamed = collections.defaultdict(collections.Counter), set()
+    for path, size, sha in manifest["files"]:
+        key = "\\".join(fs_components(RENAME_SUFFIX.sub("", path))).lower()
+        want[key][(size, sha)] += 1
+        if RENAME_SUFFIX.search(path):
+            renamed.add(key)
+    got, problems = collections.defaultdict(collections.Counter), []
+    for path, content in files_with_hashes(out_dir).items():
+        components = path.split("\\")
+        if components[0] == "embedded" or path in skip:
+            continue
+        key = "\\".join(c for c in components if not COLLISION_FOLDER.match(c)).lower()
+        got[key][content] += 1
+        if any(COLLISION_FOLDER.match(c) for c in components) and key not in renamed:
+            problems.append("%s: leading folders, but innoextract does not rename this destination" % path)
+    for key in sorted(set(want) | set(got)):
+        if got[key] != want[key]:
+            n, m = sum(got[key].values()), sum(want[key].values())
+            problems.append("%s: %s" % (key, "%d files, innoextract %d" % (n, m) if n != m else
+                                        "content differs from innoextract"))
     return problems
 
 
@@ -1624,8 +1629,9 @@ def main():
                     help="use the installers in --corpus-dir as they are (prebuilt corpus, e.g. on Windows)")
     ap.add_argument("--compile-only", action="store_true",
                     help="only compile (or reuse) the installers in --corpus-dir, then stop")
-    ap.add_argument("--compilers", default=",".join(COMPILERS + OLD_COMPILERS),
-                    help="comma-separated Inno Setup compiler labels (iscc-<label>) (default: %(default)s)")
+    ap.add_argument("--compilers", default="modern,old",
+                    help="comma-separated Inno Setup compiler labels (iscc-<label>); modern and old stand for "
+                         "all of COMPILERS and of OLD_COMPILERS (default: %(default)s)")
     ap.add_argument("--old-installers", default="all",
                     help="old Inno Setup installers (old-versions.txt) to test: all, none, or comma-separated "
                          "major versions such as 1,2,3,4 (default: %(default)s)")
@@ -1635,7 +1641,8 @@ def main():
     ap.add_argument("--work-dir", default=os.path.join(BUILD_DIR, "test-work"),
                     help="scratch folder, emptied on start (default: %(default)s)")
     args = ap.parse_args()
-    args.compilers = [c for c in args.compilers.split(",") if c]
+    aliases = {"modern": COMPILERS, "old": OLD_COMPILERS}
+    args.compilers = [x for c in args.compilers.split(",") if c for x in aliases.get(c, [c])]
     for name in ("client", "plugin", "sevenzip_dir", "sevenzip_plugin", "corpus_dir", "old_dir", "work_dir"):
         if getattr(args, name):
             setattr(args, name, os.path.abspath(getattr(args, name)))

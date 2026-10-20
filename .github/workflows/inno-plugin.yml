@@ -11,10 +11,11 @@ name: Inno plugin
 #   wine     Windows 7-Zip 26.04 under Wine with the MinGW DLLs: 64-bit 7-Zip in
 #            groups of compilers and of old installers, 32-bit 7-Zip on a
 #            subset of the compilers
-#   windows  one job per architecture (x64, Win32): the MSVC build, DLL checks,
-#            the MSVC test client and the official 7-Zip 26.04 of the same
-#            architecture on the whole corpus; the job msvc-dlls then puts both
-#            DLLs into one artifact, inno-plugin-msvc
+#   windows  per architecture (x64, Win32) one job for the modern and one for
+#            the old Inno Setup versions: the MSVC build, DLL checks, the MSVC
+#            test client and the official 7-Zip 26.04 of the same architecture;
+#            the job msvc-dlls then puts both DLLs into one artifact,
+#            inno-plugin-msvc
 on:
   workflow_dispatch:
     inputs:
@@ -287,13 +288,16 @@ jobs:
             --sevenzip-dir "$dir" --sevenzip-plugin "$dll"
 
   windows:
-    name: Windows ${{ matrix.platform }} (MSVC, official ${{ matrix.bits }}-bit 7-Zip)
+    name: Windows ${{ matrix.platform }} (MSVC, official ${{ matrix.bits }}-bit 7-Zip, ${{ matrix.part }} Inno Setup)
     needs: corpus
     runs-on: windows-2022
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        platform: [x64, Win32]
+        # modern: the COMPILERS of run_tests.py; old: the OLD_COMPILERS and the old installers.
+        part: [modern, old]
         include:
           - platform: x64
             bits: 64
@@ -339,11 +343,12 @@ jobs:
       - name: Tests (MSVC ${{ matrix.platform }} test client, ${{ matrix.bits }}-bit 7-Zip with Inno.${{ matrix.bits }}.dll)
         run: >
           python InnoPlugin/tests/run_tests.py --no-compile
+          --compilers ${{ matrix.part }} --old-installers ${{ matrix.part == 'old' && 'all' || 'none' }}
           --client "$OUT/inno_client.exe" --plugin "$OUT/$DLL"
           --sevenzip-dir InnoPlugin/build/7zip
 
       - name: Upload the MSVC DLL
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'modern' }}
         uses: actions/upload-artifact@v7
         with:
           name: inno-plugin-msvc-${{ matrix.platform }}
