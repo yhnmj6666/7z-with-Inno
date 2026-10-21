@@ -95,8 +95,9 @@ The runner:
    `unavailable`.
 
    Then the encrypted installers: with the right password, `l` lists the
-   expected items (the files with data are encrypted, the archive method
-   names `ARC4` or `XChaCha20`) and `t` passes. With a wrong password, every
+   expected items (the files with data, including the uninstaller before
+   5.0, are encrypted, the archive method names `ARC4` or `XChaCha20`) and
+   `t` passes. With a wrong password, every
    file with data reports `wrong_password` and the others are `ok`; for
    `Encryption=full`, `l` lists no items and reports the
    `EncryptedHeadersError` flag. Without a password the client's callback

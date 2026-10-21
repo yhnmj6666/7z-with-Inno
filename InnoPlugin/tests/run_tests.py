@@ -1134,7 +1134,9 @@ def test_client_encryption(results, client, installers, payload):
                 problems.append("archive %s: %s" % (key, archive[key]))
         if encryption_name(compiler) not in str(archive.get("method", "")).split():
             problems.append("archive method %r without %s" % (archive.get("method"), encryption_name(compiler)))
-        files = [o for o in items if not o["path"].startswith("embedded\\")]
+        # The file entries: the payload files, and before Inno Setup 5.0 the
+        # uninstaller, which is encrypted like them.
+        files = [o for o in items if not o["path"].startswith("embedded\\") or o["path"] == exp.uninstaller]
         if any(not o.get("encrypted") for o in files if o.get("size")):
             problems.append("files with data that are not encrypted")
         results.check("client l %s" % tag, problems, "right password")
