@@ -969,7 +969,12 @@ HRESULT CInArchive::Open(IInStream *stream, IArchiveOpenCallback *callback)
         }
       }
       else
+      {
         callbackRes = LoadHeaders(is, callback);
+        // load_headers resolves ambiguous data versions (for example 5.5.7
+        // stands for 5.5.7 and 5.6.0) by the format that fits.
+        Version = Info.version;
+      }
       ok = (callbackRes == S_OK);
     }
     else

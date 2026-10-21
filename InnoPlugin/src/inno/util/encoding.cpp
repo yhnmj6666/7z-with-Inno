@@ -618,8 +618,15 @@ iconv_t get_converter(codepage_id codepage, bool reverse) {
 	
 	iconv_t handle = iconv_t(-1);
 	
+	// Windows code page 932 is Microsoft's Shift JIS (CP932 in glibc), as
+	// MultiByteToWideChar converts it: plain SHIFT-JIS turns '\' and '~' into
+	// the yen sign and the overline and lacks the NEC and IBM extensions.
+	if(codepage == cp_shift_jis) {
+		handle = reverse ? iconv_open("CP932", "UTF-8") : iconv_open("UTF-8", "CP932");
+	}
+	
 	const char * encoding = get_encoding_name(codepage);
-	if(encoding) {
+	if(encoding && handle == iconv_t(-1)) {
 		handle = reverse ? iconv_open(encoding, "UTF-8") : iconv_open("UTF-8", encoding);
 	}
 	
