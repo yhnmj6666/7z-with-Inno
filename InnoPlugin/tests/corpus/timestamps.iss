@@ -1,13 +1,14 @@
 ; Shared part of the timestamp variants (see ../README.md). They define
 ; TimeStampsInUTC and include this file. run_tests.py compiles them with
 ; TZ=UTC; TimeStampRounding=0 keeps the odd seconds of the payload times.
+#include "compression.iss"
 
 [Setup]
 AppName=InnoPluginTimestamps
 AppVersion=1.0
 DefaultDirName={sd}\InnoPluginTimestamps
 DisableProgramGroupPage=yes
-Compression=lzma2
+Compression={#Compression}
 SolidCompression=yes
 TimeStampsInUTC={#TimeStampsInUTC}
 TimeStampRounding=0

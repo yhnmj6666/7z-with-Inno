@@ -2,16 +2,20 @@ name: Inno plugin
 
 # Builds the 7-Zip Inno Setup plugin in InnoPlugin/ and runs its tests (see
 # InnoPlugin/tests/README.md). The jobs run in parallel where they can:
-#   corpus   test installers compiled with Inno Setup under Wine; restored from
-#            the cache, so only missing or outdated installers are compiled
+#   corpus   test installers compiled with Inno Setup under Wine, and the
+#            installers of old Inno Setup versions with what innoextract
+#            extracts from them; restored from the cache, so only missing or
+#            outdated installers are compiled
 #   build    GCC, MinGW x86_64 and MinGW i686 builds, DLL export and import checks
 #   client   the test client (GCC build) on the whole corpus
 #   wine     Windows 7-Zip 26.04 under Wine with the MinGW DLLs: 64-bit 7-Zip in
-#            groups of compilers, 32-bit 7-Zip on a subset of the compilers
-#   windows  one job per architecture (x64, Win32): the MSVC build, DLL checks,
-#            the MSVC test client and the official 7-Zip 26.04 of the same
-#            architecture on the whole corpus; the job msvc-dlls then puts both
-#            DLLs into one artifact, inno-plugin-msvc
+#            groups of compilers and of old installers, 32-bit 7-Zip on a
+#            subset of the compilers
+#   windows  per architecture (x64, Win32) one job for the modern and one for
+#            the old Inno Setup versions: the MSVC build, DLL checks, the MSVC
+#            test client and the official 7-Zip 26.04 of the same architecture;
+#            the job msvc-dlls then puts both DLLs into one artifact,
+#            inno-plugin-msvc
 on:
   workflow_dispatch:
     inputs:
@@ -58,7 +62,8 @@ jobs:
         id: key
         run: >
           echo "key=corpus-${{ hashFiles('InnoPlugin/tests/corpus/**', 'InnoPlugin/tests/make_payload.py',
-          'InnoPlugin/tests/run_tests.py', 'InnoPlugin/tests/iscrypt/**', '.github/scripts/setup-inno-tools.sh') }}"
+          'InnoPlugin/tests/run_tests.py', 'InnoPlugin/tests/old-versions.txt', 'InnoPlugin/tests/iscrypt/**',
+          '.github/scripts/setup-inno-tools.sh') }}"
           >> "$GITHUB_OUTPUT"
 
       - name: Restore the corpus cache
@@ -78,11 +83,18 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: bash .github/scripts/setup-inno-tools.sh iscc
 
+      - name: Download the old Inno Setup versions, unpack the old compilers
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash .github/scripts/setup-inno-tools.sh old
+
       - name: Compile the missing or outdated installers
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          # One Wine server and set of Wine services for all compiler runs (see
+          # One X display (Inno Setup 1.3 compiles with its GUI compiler), one
+          # Wine server and one set of Wine services for all compiler runs (see
           # the wine job).
+          Xvfb :99 -screen 0 1024x768x24 -nolisten tcp > /dev/null 2>&1 &
+          export DISPLAY=:99
           wineserver -w
           wineserver -p
           wine cmd /c exit > /dev/null 2>&1
@@ -208,6 +220,19 @@ jobs:
           - arch: x64
             name: 6.7.3 to 7.1.0
             compilers: 6.7.3,7.0.2-x64,7.1.0-x64,7.1.0-x86
+          - arch: x64
+            name: 1.3.26 to 4.2.7
+            compilers: 1.3.26,2.0.19,3.0.7,4.0.8,4.0.11,4.1.5,4.1.8,4.2.7
+          - arch: x64
+            name: 5.1.14 to 5.5.9
+            compilers: 5.1.14,5.2.3,5.3.8,5.3.8-unicode,5.5.9,5.5.9-unicode
+          # The installers of the old Inno Setup versions (old-versions.txt).
+          - arch: x64
+            name: old installers 1.2 to 4.2
+            old: 1,2,3,4
+          - arch: x64
+            name: old installers 5.x
+            old: "5"
           # 32-bit 7-Zip only with a compiler from each format group; the
           # windows job tests 32-bit 7-Zip on the whole corpus.
           - arch: x86
@@ -259,16 +284,20 @@ jobs:
             dir=InnoPlugin/build/7zip-x86 dll=InnoPlugin/build/mingw-i686/Inno.32.dll
           fi
           python3 InnoPlugin/tests/run_tests.py --no-compile --no-client \
-            --compilers "${{ matrix.compilers }}" --sevenzip-dir "$dir" --sevenzip-plugin "$dll"
+            --compilers "${{ matrix.compilers }}" --old-installers "${{ matrix.old || 'none' }}" \
+            --sevenzip-dir "$dir" --sevenzip-plugin "$dll"
 
   windows:
-    name: Windows ${{ matrix.platform }} (MSVC, official ${{ matrix.bits }}-bit 7-Zip)
+    name: Windows ${{ matrix.platform }} (MSVC, official ${{ matrix.bits }}-bit 7-Zip, ${{ matrix.part }} Inno Setup)
     needs: corpus
     runs-on: windows-2022
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        platform: [x64, Win32]
+        # modern: the COMPILERS of run_tests.py; old: the OLD_COMPILERS and the old installers.
+        part: [modern, old]
         include:
           - platform: x64
             bits: 64
@@ -314,11 +343,12 @@ jobs:
       - name: Tests (MSVC ${{ matrix.platform }} test client, ${{ matrix.bits }}-bit 7-Zip with Inno.${{ matrix.bits }}.dll)
         run: >
           python InnoPlugin/tests/run_tests.py --no-compile
+          --compilers ${{ matrix.part }} --old-installers ${{ matrix.part == 'old' && 'all' || 'none' }}
           --client "$OUT/inno_client.exe" --plugin "$OUT/$DLL"
           --sevenzip-dir InnoPlugin/build/7zip
 
       - name: Upload the MSVC DLL
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'modern' }}
         uses: actions/upload-artifact@v7
         with:
           name: inno-plugin-msvc-${{ matrix.platform }}
