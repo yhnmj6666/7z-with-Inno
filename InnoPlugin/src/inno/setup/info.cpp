@@ -306,6 +306,16 @@ void info::load_version(std::istream & is) {
 	
 }
 
+void info::use_newest_known_version(std::istream & is) {
+	
+	version = version::newest_known();
+	
+	if(version >= INNO_VERSION(6, 5, 0)) {
+		load_encryption_header(is);
+	}
+	
+}
+
 void info::load_encryption_header(std::istream & is) {
 	
 	// CRC32 of the encryption header, then TSetupEncryptionHeader: EncryptionUse (1 byte),

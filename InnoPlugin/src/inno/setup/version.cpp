@@ -429,6 +429,18 @@ bool version::is_newer_than_known() const {
 	return value > newest;
 }
 
+version version::newest_known() {
+	
+	const known_version * newest = &versions[0];
+	for(size_t i = 1; i < size_t(boost::size(versions)); i++) {
+		if(versions[i].version > newest->version) {
+			newest = &versions[i];
+		}
+	}
+	
+	return version(newest->version, newest->variant, true);
+}
+
 version_constant version::next() {
 	
 	const known_legacy_version * legacy_end = boost::end(legacy_versions);

@@ -161,6 +161,14 @@ struct info {
 	void load_version(std::istream & is);
 	
 	/*!
+	 * Read an installer whose setup data version is newer than all known ones with the
+	 * format of the newest known version, as innoextract does: set \ref version to
+	 * \ref version::newest_known and load the encryption header of that format.
+	 * Call after \ref load_version, then call \ref load_headers.
+	 */
+	void use_newest_known_version(std::istream & is);
+	
+	/*!
 	 * Load the setup headers following the data read by \ref load_version.
 	 *
 	 * \param key Key from \ref get_key if \ref encryption is \c EncryptionFull.
