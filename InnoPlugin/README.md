@@ -224,10 +224,18 @@ and checks by its SHA-256; where it cannot be downloaded, with a stand-in
 - Installers with a setup data version newer than `7.0.0.3` are read with the
   format of `7.0.0.3` (see above); if the format changed in a way that still
   parses, the listing or the files may be wrong.
-- ANSI installers decode all text with one code page, as innoextract does
-  (see [Items](#items)): text of a language with another code page, such as
-  its messages in `embedded\<language>.isl`, keeps that code page's meaning
-  only where it maps to the same characters.
+- ANSI installers do not record the code page of their setup headers (such as
+  the `[Setup]` texts) and entries (such as file names). The plugin decodes
+  them with one code page for the whole installer, as innoextract does:
+  Windows-1252 if one of the installer's languages uses it, otherwise that of
+  the first language (see [Items](#items)). Text in another code page, such
+  as Cyrillic file names in an installer with English and Russian, gets
+  wrong characters. The texts of a language, its name in `[LangOptions]` of
+  `embedded\<language>.isl` and its custom messages in
+  `embedded\install_script.iss`, are converted with the code page of that
+  language. The compiled messages of each language, the `Data=` line of
+  `embedded\<language>.isl`, are copied as stored, in the code page of the
+  language, without conversion.
 - Slices of disk-spanning installers are looked up only under the names
   described above (so not for a renamed installer), in the installer's
   folder, with the exact case where the file system is case-sensitive. For an

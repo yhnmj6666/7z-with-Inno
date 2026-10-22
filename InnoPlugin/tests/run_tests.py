@@ -1081,7 +1081,7 @@ def test_client_unsupported(results, client, unsupported):
         archive = (of_type(objs, "archive") or [{}])[0]
         if of_type(objs, "item"):
             problems.append("%d items listed" % len(of_type(objs, "item")))
-        if "Unsupported Inno Setup version: %s" % UNSUPPORTED["unreadable"][2] not in str(archive.get("error")):
+        if archive.get("error") != "Unsupported Inno Setup version: %s" % UNSUPPORTED["unreadable"][2]:
             problems.append("error %r" % archive.get("error"))
         if not int(archive.get("error_flags", 0)) & (1 << 8):
             problems.append("error_flags %s without UnsupportedFeature" % archive.get("error_flags"))
@@ -1665,6 +1665,11 @@ def test_sevenzip(args, results, installers, expected, damaged, payload, env, en
 
 
 def main():
+    # Item paths have characters of any script (the codepage variant lists
+    # Cyrillic names). On Windows, Python writes to a pipe in the ANSI code
+    # page, which cannot encode them, so always write UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     exe = ".exe" if IS_WINDOWS else ""
     if IS_WINDOWS:
         default_build = os.path.join(BUILD_DIR, "x64", "Release")

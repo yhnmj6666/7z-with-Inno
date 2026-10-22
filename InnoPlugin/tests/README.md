@@ -170,7 +170,8 @@ with `TZ=America/New_York`, and on Windows (and for 7-Zip under Wine) uses
 the system time zone.
 
 The runner prints one line per check (`PASS`, `FAIL`, `SKIP`, `XFAIL`) and a
-summary, and exits with 1 if any check failed.
+summary, in UTF-8 whatever the console code page, and exits with 1 if any
+check failed.
 
 ### Known issues
 

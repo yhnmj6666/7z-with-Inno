@@ -964,7 +964,7 @@ HRESULT CInArchive::Open(IInStream *stream, IArchiveOpenCallback *callback)
           Warnings.clear();
           callbackRes = S_OK;
           std::ostringstream oss;
-          oss << "Unsupported Inno Setup version: " << Version;
+          oss << "Unsupported Inno Setup version: " << GetVersionNumber(Version);
           SetError(kpv_ErrorFlags_UnsupportedFeature, oss.str());
         }
       }
