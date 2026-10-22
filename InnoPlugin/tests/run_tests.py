@@ -56,13 +56,14 @@ FEATURES = {
     "ROUNDING": (4, 1, 5),      # TimeStampRounding
     "GERMAN": (4, 2, 7),        # compiler:Languages\German.isl
     "ENCRYPTION": (4, 2, 7),    # Encryption (with ISCrypt.dll)
+    "CODEPAGE": (4, 2, 7),      # [LangOptions] LanguageCodePage
     "CHECK": (5, 1, 14),        # Check: Is64BitInstallMode, IsWin64, FileExists(); Flags: 32bit, 64bit
     "LZMA2": (5, 3, 9),         # Compression=lzma2
     "ARM64": (5, 6, 0),         # Check: IsARM64
 }
 # Corpus variants; the scripts set the compression method (see Expected).
 VARIANTS = ("lzma-solid", "lzma2-nonsolid", "zip-solid", "zip-nonsolid", "bzip-solid", "bzip-nonsolid",
-            "none", "time-utc", "time-local", "spanned")
+            "none", "time-utc", "time-local", "spanned", "codepage")
 # Variants -> the FEATURES they need (the timestamp variants need TimeStampRounding=0).
 VARIANT_FEATURES = {
     "lzma-solid": ("LZMA", "SOLID"),
@@ -73,7 +74,13 @@ VARIANT_FEATURES = {
     "none": ("COMPRESSION",),
     "time-utc": ("UTC", "ROUNDING"),
     "time-local": ("ROUNDING",),
+    "codepage": ("CODEPAGE",),
 }
+# Variants for the ANSI compilers only -> the code page of their only
+# language. The setup headers are decoded with it: payload names in
+# Windows-1252 (Wine's ANSI code page when compiling) are listed with their
+# meaning in that code page.
+CODEPAGE_VARIANTS = {"codepage": "cp1251"}
 # Compression directive values -> the method that kpidMethod names.
 METHODS = {"zip": "Deflate", "bzip": "BZip2", "lzma": "LZMA", "lzma2": "LZMA2", "none": "Copy"}
 # Disk-spanning variants: their data is in slice files next to the installer.
@@ -83,6 +90,15 @@ SPANNED_VARIANTS = {"spanned"}
 # Before 6.4, Encryption=yes uses ARC4 from ISCrypt.dll, which the compiler
 # needs in its folder; without it the variant is skipped.
 ENCRYPTED_VARIANTS = {"encrypted": FEATURES["ENCRYPTION"], "encrypted-full": (6, 5, 0)}
+# Copies of a corpus installer with the setup data version changed to an
+# unknown newer one (make_unsupported), each tested when one of its compilers
+# is in the run: {kind: (compilers, data version, changed version)}. "newer"
+# is read with the format of the newest known version (the one of 7.1.0);
+# that format does not fit "unreadable", which opens with an error.
+UNSUPPORTED = {
+    "newer": (("7.1.0-x64", "7.1.0-x86"), "7.0.0.3", "9.9.9.9"),
+    "unreadable": (("5.6.1",), "5.5.7", "9.9.9"),
+}
 PASSWORD = "inno-test-password"
 WRONG_PASSWORD = "wrong-password"
 # Timestamp variants -> True if they store times in UTC (TimeStampsInUTC=yes).
@@ -92,18 +108,17 @@ TIME_ZONE = "America/New_York"
 # Payload files that are x86 executables. Inno Setup 4.1.8 and later store
 # them with a call instruction filter when they are compressed (filter_name).
 EXECUTABLES = {"bin/calls.exe"}
+# The item of Setup's uninstaller before Inno Setup 5.0.
+UNINSTALLER = "embedded\\uninstall.exe"
 TIMEOUT = 600
 # Old Inno Setup installers, tested as ready-made installers (test_*_old).
 OLD_LIST = os.path.join(TESTS_DIR, "old-versions.txt")
 # Known plugin problems (README.md, Known limitations), tested as expected
 # failures: a check reports XFAIL while the problem shows, and fails once it
-# no longer does, so that this table and the README are updated.
-KNOWN_ISSUES = {
-    "uninstaller": "before Inno Setup 5.0 the uninstaller is an item with an empty path",
-    "codepage": "ANSI installers whose first language uses a code page other than 1252: "
-                "non-ASCII text becomes '_', with an archive warning",
-    "slices-1.3": "disk spanning before Inno Setup 2.0: the slices <name>.1, <name>.2, ... are not found",
-}
+# no longer does, so that this table and the README are updated. Each entry
+# is {name: description}; installer_issues and old_issues say which
+# installers show it.
+KNOWN_ISSUES = {}
 
 # Characters that Windows does not allow in file names. The test client and
 # 7-Zip on Windows replace them with '_' in each path component.
@@ -335,12 +350,20 @@ class Expected:
             if path.lower() in seen:
                 raise ValueError("%s: two entries for %s (add '; expect:' lines)" % (tag, path))
             seen.add(path.lower())
+        if variant in CODEPAGE_VARIANTS:
+            self.entries = [(path.encode("cp1252").decode(CODEPAGE_VARIANTS[variant]), rel)
+                            for path, rel in self.entries]
         self.sources = dict(self.entries)
         # Without a [Languages] section, Inno Setup names the language "default";
         # Inno Setup 1.3 stores no languages.
         if not languages and compiler_version(compiler) >= (2, 0, 0):
             languages = ["default"]
         self.extras = ["embedded\\install_script.iss"] + ["embedded\\%s.isl" % name for name in languages]
+        # Before Inno Setup 5.0, Setup's uninstaller (an x86 executable) is a
+        # file entry without a destination.
+        self.uninstaller = UNINSTALLER if compiler_version(compiler) < (5, 0, 0) else None
+        if self.uninstaller:
+            self.extras.append(self.uninstaller)
         # Before Inno Setup 4.2.5 every chunk is compressed: Compression=none
         # gives zlib streams of stored blocks.
         if compression == "none" and compiler_version(compiler) < (4, 2, 5):
@@ -352,15 +375,12 @@ class Expected:
 def plain_script(compiler, variant):
     """The script of a variant for an old compiler (no preprocessor): the
     preprocessor lines applied, and in [Setup] the folders (the script is in
-    the output folder installers/<compiler>), the output name, AppVerName
-    (required before Inno Setup 5.5) and before Inno Setup 5.0
-    Uninstallable=no (the uninstaller is an item; see KNOWN_ISSUES)."""
+    the output folder installers/<compiler>), the output name and AppVerName
+    (required before Inno Setup 5.5)."""
     lines = list(script_lines(os.path.join(SCRIPTS_DIR, variant + ".iss"), script_symbols(compiler)))
     app = dict(line.split("=", 1) for line in lines if re.match(r"App(Name|Version)=", line))
     setup = ["SourceDir=..\\..", "OutputDir=installers\\" + compiler, "OutputBaseFilename=" + variant,
              "AppVerName=%s %s" % (app["AppName"], app["AppVersion"])]
-    if compiler_version(compiler) < (5, 0, 0):
-        setup.append("Uninstallable=no")
     i = lines.index("[Setup]") + 1
     return "\r\n".join(lines[:i] + setup + lines[i:]) + "\r\n"
 
@@ -397,9 +417,11 @@ def missing_iscrypt(compiler, variant):
 
 
 def variants(compiler):
-    """The VARIANTS that a compiler can build (VARIANT_FEATURES)."""
+    """The VARIANTS that a compiler can build (VARIANT_FEATURES), without
+    CODEPAGE_VARIANTS for the Unicode compilers."""
     missing = script_symbols(compiler)
-    return [v for v in VARIANTS if not any("NO_" + f in missing for f in VARIANT_FEATURES.get(v, ()))]
+    return [v for v in VARIANTS if not any("NO_" + f in missing for f in VARIANT_FEATURES.get(v, ()))
+            and not (v in CODEPAGE_VARIANTS and is_unicode(compiler))]
 
 
 def encrypted_variants(compiler):
@@ -407,9 +429,7 @@ def encrypted_variants(compiler):
 
 
 def installer_issues(compiler, variant):
-    """The KNOWN_ISSUES of a corpus installer."""
-    if variant in SPANNED_VARIANTS and compiler_version(compiler) < (2, 0, 0):
-        return {"slices-1.3"}
+    """The KNOWN_ISSUES of a corpus installer (none at present)."""
     return set()
 
 
@@ -657,13 +677,15 @@ def method_problems(expected, archive_method, items):
     filter for compressed executables. items: [(path, method)]."""
     method = expected.method
     filtered = "%s %s" % (method, expected.filter) if expected.filter else method
-    has_executable = any(source in EXECUTABLES for source in expected.sources.values())
+    has_executable = bool(expected.uninstaller) or any(source in EXECUTABLES
+                                                       for source in expected.sources.values())
     problems = []
     if archive_method != (filtered if has_executable else method):
         problems.append("archive method %r, expected %r" % (archive_method, filtered if has_executable else method))
     for path, item_method in items:
         source = expected.sources.get(path)
-        want = None if source is None else filtered if source in EXECUTABLES else method
+        want = filtered if path == expected.uninstaller else None if source is None else \
+            filtered if source in EXECUTABLES else method
         if (item_method or None) != want:
             problems.append("%s: method %r, expected %r" % (path, item_method, want))
     return problems
@@ -830,15 +852,12 @@ def test_client(args, results, installers, expected, damaged, payload, env):
         problems += compare_listing([(o.get("path"), o.get("size")) for o in items], exp, payload)
         if archive.get("phy_size") != os.path.getsize(exe):
             problems.append("phy_size %s, file size %d" % (archive.get("phy_size"), os.path.getsize(exe)))
-        symptoms = {}
-        if "Missing slice" in archive.get("warning", ""):
-            symptoms["slices-1.3"] = "archive warning %r" % archive["warning"]
         for key in ("error", "warning"):
-            if key in archive and not (key == "warning" and symptoms):
+            if key in archive:
                 problems.append("archive %s: %s" % (key, archive[key]))
         issues = installer_issues(compiler, variant)
         # With a known issue the other checks of the installer would fail too.
-        if results.check_known("client l %s" % tag, problems, symptoms, issues) and issues:
+        if results.check_known("client l %s" % tag, problems, {}, issues) and issues:
             continue
         if not items:
             continue
@@ -1001,27 +1020,105 @@ def encryption_name(compiler):
 
 
 def make_unsupported(args, results, installers):
-    """A copy of the installer of the newest compiler with its setup data
-    version changed to an unknown newer one. Returns its path or None."""
-    if not installers:
-        return None
-    compiler, variant = max(installers, key=lambda k: (compiler_version(k[0]), k))
-    with open(installers[(compiler, variant)], "rb") as f:
-        data = f.read()
-    # The data version, e.g. "(7.0.0.3)", becomes "(9.9.9.9)" (same length).
-    patched, count = re.subn(rb"(Inno Setup Setup Data \()([\d.]+)(\))",
-                             lambda m: m.group(1) + re.sub(rb"\d", b"9", m.group(2)) + m.group(3), data)
-    name = "unsupported version from %s/%s" % (compiler, variant)
-    if not count:
-        results.report("FAIL", name, "no setup data version found")
-        return None
-    path = os.path.join(args.work_dir, "unsupported-version.exe")
-    with open(path, "wb") as f:
-        f.write(patched)
-    return path
+    """Copies of corpus installers with their setup data version changed to
+    an unknown newer one (UNSUPPORTED), for the compilers in the run.
+    Returns {kind: (path of the copy, original installer)}."""
+    result = {}
+    for kind, (compilers, old, new) in sorted(UNSUPPORTED.items()):
+        found = sorted(k for k in installers if k[0] in compilers and k[1] not in SPANNED_VARIANTS)
+        if not found:
+            continue
+        compiler, variant = next((k for k in found if k[1] == "lzma-solid"), found[0])
+        with open(installers[(compiler, variant)], "rb") as f:
+            data = f.read()
+        # The same length: "(7.0.0.3)" becomes "(9.9.9.9)".
+        marker = b"Inno Setup Setup Data (%s)" % old.encode("ascii")
+        if marker not in data:
+            results.report("FAIL", "unsupported version %s from %s/%s" % (kind, compiler, variant),
+                           "no setup data version %s found" % old)
+            continue
+        path = os.path.join(args.work_dir, "unsupported-%s.exe" % kind)
+        with open(path, "wb") as f:
+            f.write(data.replace(marker, b"Inno Setup Setup Data (%s)" % new.encode("ascii")))
+        result[kind] = (path, installers[(compiler, variant)])
+    return result
 
 
-def test_client_encryption(results, client, installers, unsupported, payload):
+def unsupported_warning(kind):
+    _, old, new = UNSUPPORTED[kind]
+    return "Unknown Inno Setup version %s, read as %s" % (new, old)
+
+
+def test_client_unsupported(results, client, unsupported):
+    """The copies of make_unsupported: "newer" lists the same items as its
+    original with a warning, "unreadable" opens without items and with an
+    error."""
+    if "newer" in unsupported:
+        path, original = unsupported["newer"]
+        tag = "unsupported version (%s)" % os.path.relpath(original, os.path.dirname(os.path.dirname(original)))
+        code, objs, problems = client.run("l", path)
+        problems += client_exit(code, objs)
+        archive = (of_type(objs, "archive") or [{}])[0]
+        items = of_type(objs, "item")
+        want = [(o.get("path"), o.get("size")) for o in of_type(client.run("l", original)[1], "item")]
+        if not items or [(o.get("path"), o.get("size")) for o in items] != want:
+            problems.append("%d items, the original %d" % (len(items), len(want)))
+        if "error" in archive:
+            problems.append("archive error: %s" % archive["error"])
+        if archive.get("warning") != unsupported_warning("newer"):
+            problems.append("archive warning %r, expected %r" % (archive.get("warning"), unsupported_warning("newer")))
+        version = UNSUPPORTED["newer"][2]
+        if "InnoSetupVersion = %s " % version not in archive.get("comment", "").replace("\n", " "):
+            problems.append("comment %r without version %s" % (archive.get("comment"), version))
+        results.check("client l " + tag, problems, str(archive.get("warning")))
+        code, objs, problems = client.run("t", path)
+        problems += client_exit(code, objs) + extract_problems(objs, "test", [o["index"] for o in items])
+        results.check("client t " + tag, problems)
+    if "unreadable" in unsupported:
+        path, original = unsupported["unreadable"]
+        tag = "unsupported version (%s)" % os.path.relpath(original, os.path.dirname(os.path.dirname(original)))
+        code, objs, problems = client.run("l", path)
+        archive = (of_type(objs, "archive") or [{}])[0]
+        if of_type(objs, "item"):
+            problems.append("%d items listed" % len(of_type(objs, "item")))
+        if archive.get("error") != "Unsupported Inno Setup version: %s" % UNSUPPORTED["unreadable"][2]:
+            problems.append("error %r" % archive.get("error"))
+        if not int(archive.get("error_flags", 0)) & (1 << 8):
+            problems.append("error_flags %s without UnsupportedFeature" % archive.get("error_flags"))
+        results.check("client l " + tag, problems, str(archive.get("error")))
+
+
+def test_sevenzip_unsupported(results, sz, unsupported):
+    if "newer" in unsupported:
+        path, original = unsupported["newer"]
+        tag = "unsupported version (%s)" % os.path.relpath(original, os.path.dirname(os.path.dirname(original)))
+        code, out, err = sz.run("l", "-slt", sz.path(path))
+        problems = exit_problem(code, err)
+        archive, items = parse_slt(out)
+        want = [i.get("Path") for i in parse_slt(sz.run("l", "-slt", sz.path(original))[1])[1]]
+        if not items or [i.get("Path") for i in items] != want:
+            problems.append("%d items, the original %d" % (len(items), len(want)))
+        if unsupported_warning("newer") not in out:
+            problems.append("no warning %r in the output" % unsupported_warning("newer"))
+        if "ERROR" in out:
+            problems.append("errors: " + "; ".join(l.strip() for l in out.splitlines() if "ERROR" in l))
+        results.check("7z l " + tag, problems, "%d items" % len(items))
+        code, out, err = sz.run("t", sz.path(path))
+        problems = exit_problem(code, err)
+        if not problems and "Everything is Ok" not in out:
+            problems.append("no 'Everything is Ok'")
+        results.check("7z t " + tag, problems)
+    if "unreadable" in unsupported:
+        path, original = unsupported["unreadable"]
+        tag = "unsupported version (%s)" % os.path.relpath(original, os.path.dirname(os.path.dirname(original)))
+        code, out, err = sz.run("l", sz.path(path))
+        problems = exit_problem(code, err, expected=2)
+        if "Unsupported Inno Setup version" not in out + err:
+            problems.append("no 'Unsupported Inno Setup version' in the output")
+        results.check("7z l " + tag, problems)
+
+
+def test_client_encryption(results, client, installers, payload):
     for (compiler, variant), exe in sorted(installers.items()):
         tag = "%s/%s" % (compiler, variant)
         exp = Expected(compiler, variant)
@@ -1037,7 +1134,9 @@ def test_client_encryption(results, client, installers, unsupported, payload):
                 problems.append("archive %s: %s" % (key, archive[key]))
         if encryption_name(compiler) not in str(archive.get("method", "")).split():
             problems.append("archive method %r without %s" % (archive.get("method"), encryption_name(compiler)))
-        files = [o for o in items if not o["path"].startswith("embedded\\")]
+        # The file entries: the payload files, and before Inno Setup 5.0 the
+        # uninstaller, which is encrypted like them.
+        files = [o for o in items if not o["path"].startswith("embedded\\") or o["path"] == exp.uninstaller]
         if any(not o.get("encrypted") for o in files if o.get("size")):
             problems.append("files with data that are not encrypted")
         results.check("client l %s" % tag, problems, "right password")
@@ -1082,19 +1181,8 @@ def test_client_encryption(results, client, installers, unsupported, payload):
             problems.append("extract_result %s, expected E_ABORT" % (ends[0] if ends else None))
         results.check("client t %s" % tag, problems, "no password (callback cancels)")
 
-    if unsupported:
-        code, objs, problems = client.run("l", unsupported)
-        archive = (of_type(objs, "archive") or [{}])[0]
-        if of_type(objs, "item"):
-            problems.append("%d items listed" % len(of_type(objs, "item")))
-        if "Unsupported Inno Setup version: 9.9.9" not in str(archive.get("error")):
-            problems.append("error %r" % archive.get("error"))
-        if not int(archive.get("error_flags", 0)) & (1 << 8):
-            problems.append("error_flags %s without UnsupportedFeature" % archive.get("error_flags"))
-        results.check("client l unsupported version", problems, str(archive.get("error")))
 
-
-def test_sevenzip_encryption(results, sz, installers, unsupported):
+def test_sevenzip_encryption(results, sz, installers):
     for (compiler, variant), exe in sorted(installers.items()):
         tag = "%s/%s" % (compiler, variant)
         code, out, err = sz.run("t", "-p" + PASSWORD, sz.path(exe))
@@ -1107,12 +1195,6 @@ def test_sevenzip_encryption(results, sz, installers, unsupported):
         if "Wrong password" not in out + err:
             problems.append("no 'Wrong password' in the output")
         results.check("7z t %s" % tag, problems, "wrong password")
-    if unsupported:
-        code, out, err = sz.run("l", sz.path(unsupported))
-        problems = exit_problem(code, err, expected=2)
-        if "Unsupported Inno Setup version" not in out + err:
-            problems.append("no 'Unsupported Inno Setup version' in the output")
-        results.check("7z l unsupported version", problems)
 
 
 # ---------------------------------------------------------------------------
@@ -1124,7 +1206,8 @@ COLLISION_FOLDER = re.compile(r"^\{(x86|x64|arm64|#[^}]*|@[^}]*|\$\d+)\}$")
 RENAME_SUFFIX = re.compile(r"(?:[#@][^\\#@$]*|\$\d+)+$")
 # Version of the manifests that build_old writes.
 MANIFEST_FORMAT = 1
-CONVERSION_WARNING = "Unknown data while converting"
+# 7-Zip prints archive warnings after "WARNING:" or "WARNINGS:".
+SEVENZIP_WARNING = re.compile(r"^WARNINGS?:", re.M)
 
 
 def old_installers():
@@ -1139,14 +1222,8 @@ def old_version(name):
 
 
 def old_issues(name):
-    """The KNOWN_ISSUES of an old installer."""
-    issues = set()
-    if old_version(name) < (5, 0, 0):
-        issues.add("uninstaller")
-    # From 4.2.1 on, the ANSI installers of Inno Setup include languages with other code pages.
-    if "unicode" not in name and old_version(name) >= (4, 2, 1):
-        issues.add("codepage")
-    return issues
+    """The KNOWN_ISSUES of an old installer (none at present)."""
+    return set()
 
 
 def sha256_file(path):
@@ -1222,13 +1299,12 @@ def build_old(args, results):
     return result
 
 
-def manifest_problems(out_dir, exe, skip=()):
+def manifest_problems(out_dir, exe):
     """Compares an extracted folder with the manifest of an old installer (see
     build_old): for every destination (the path without the leading folders
     for the same destination, and without innoextract's renaming), the same
     number of files with the same contents. Leading folders are allowed only
-    where innoextract renames too. Items under embedded\\ and the paths in
-    skip are not compared."""
+    where innoextract renames too. Items under embedded\\ are not compared."""
     with open(exe + ".json") as f:
         manifest = json.load(f)
     want, renamed = collections.defaultdict(collections.Counter), set()
@@ -1240,7 +1316,7 @@ def manifest_problems(out_dir, exe, skip=()):
     got, problems = collections.defaultdict(collections.Counter), []
     for path, content in files_with_hashes(out_dir).items():
         components = path.split("\\")
-        if components[0] == "embedded" or path in skip:
+        if components[0] == "embedded":
             continue
         key = "\\".join(c for c in components if not COLLISION_FOLDER.match(c)).lower()
         got[key][content] += 1
@@ -1265,15 +1341,13 @@ def test_client_old(args, results, client, old):
             problems.append("phy_size %s, file size %d" % (archive.get("phy_size"), os.path.getsize(exe)))
         if "error" in archive:
             problems.append("archive error: %s" % archive["error"])
-        symptoms = {}
-        warnings = [w for w in archive.get("warning", "").split("\n") if w]
-        if any(w.startswith(CONVERSION_WARNING) for w in warnings):
-            symptoms["codepage"] = "archive warning %r" % "; ".join(w for w in warnings if w.startswith(CONVERSION_WARNING))
-        problems += ["archive warning %r" % w for w in warnings if not w.startswith(CONVERSION_WARNING)]
-        empty = [o for o in items if not o.get("path")]
-        if empty:
-            symptoms["uninstaller"] = "item %s (%s bytes) has an empty path" % (empty[0]["index"], empty[0].get("size"))
-        results.check_known("client l " + tag, problems, symptoms, old_issues(name), "%d items" % len(items))
+        problems += ["archive warning %r" % w for w in archive.get("warning", "").split("\n") if w]
+        problems += ["item %s (%s bytes) has an empty path" % (o["index"], o.get("size"))
+                     for o in items if not o.get("path")]
+        # Before Inno Setup 5.0, Setup's uninstaller is a file entry without a destination.
+        if old_version(name) < (5, 0, 0) and not any(o.get("path") == UNINSTALLER for o in items):
+            problems.append("no item %s" % UNINSTALLER)
+        results.check_known("client l " + tag, problems, {}, old_issues(name), "%d items" % len(items))
         if not items:
             continue
         indices = [o["index"] for o in items]
@@ -1283,12 +1357,9 @@ def test_client_old(args, results, client, old):
         problems += client_exit(code, objs) + extract_problems(objs, "test", indices, sizes)
         results.check("client t " + tag, problems)
 
-        # The client does not extract items without a path (known issue uninstaller).
-        keep = [o["index"] for o in items if o.get("path")]
-        option = ["-i" + ",".join(str(i) for i in keep)] if len(keep) < len(indices) else []
         out_dir = os.path.join(args.work_dir, "client-old", name)
-        code, objs, problems = client.run("x", exe, out_dir, *option)
-        problems += client_exit(code, objs) + extract_problems(objs, "extract", keep, None if option else sizes)
+        code, objs, problems = client.run("x", exe, out_dir)
+        problems += client_exit(code, objs) + extract_problems(objs, "extract", indices, sizes)
         problems += manifest_problems(out_dir, exe)
         results.check("client x " + tag, problems, "compared with innoextract")
         shutil.rmtree(out_dir, ignore_errors=True)
@@ -1306,17 +1377,13 @@ def test_sevenzip_old(args, results, sz, old):
             if archive.get("Physical Size") != str(os.path.getsize(exe)):
                 problems.append("Physical Size = %s, file size %d" % (archive.get("Physical Size"),
                                                                       os.path.getsize(exe)))
-        symptoms = {}
-        # One warning is on the WARNING line, several follow it in braces.
-        converting = [line[line.index(CONVERSION_WARNING):].strip() for line in out.splitlines()
-                      if CONVERSION_WARNING in line]
-        if converting:
-            symptoms["codepage"] = "warning %r" % "; ".join(converting)
+        if SEVENZIP_WARNING.search(out):
+            problems.append("warnings: " + "; ".join(l.strip() for l in out.splitlines() if "WARNING" in l))
         # 7-Zip names an item without a path after the archive.
         stem = os.path.splitext(name)[0]
         if any(i.get("Path") == stem for i in items):
-            symptoms["uninstaller"] = "an item without a path, listed as %s" % stem
-        results.check_known("7z l " + tag, problems, symptoms, old_issues(name), "%d items" % len(items))
+            problems.append("an item without a path, listed as %s" % stem)
+        results.check_known("7z l " + tag, problems, {}, old_issues(name), "%d items" % len(items))
 
         code, out, err = sz.run("t", sz.path(exe))
         problems = exit_problem(code, err)
@@ -1329,7 +1396,7 @@ def test_sevenzip_old(args, results, sz, old):
         code, out, err = sz.run("x", "-y", "-o" + sz.path(out_dir), sz.path(exe))
         problems = exit_problem(code, err)
         if not problems:
-            problems = manifest_problems(out_dir, exe, skip={stem} if "uninstaller" in symptoms else ())
+            problems = manifest_problems(out_dir, exe)
         results.check("7z x " + tag, problems, "compared with innoextract")
         shutil.rmtree(out_dir, ignore_errors=True)
 
@@ -1458,7 +1525,8 @@ def test_sevenzip(args, results, installers, expected, damaged, payload, env, en
     if not folder:
         return
     sz = SevenZip(folder, env)
-    test_sevenzip_encryption(results, sz, encrypted or {}, unsupported)
+    test_sevenzip_encryption(results, sz, encrypted or {})
+    test_sevenzip_unsupported(results, sz, unsupported or {})
     test_sevenzip_old(args, results, sz, old)
 
     code, out, err = sz.run("i")
@@ -1500,13 +1568,11 @@ def test_sevenzip(args, results, installers, expected, damaged, payload, env, en
                                          for i in items], exp, payload)
             problems += method_problems(exp, archive.get("Method"),
                                         [(i.get("Path"), i.get("Method")) for i in items])
-        symptoms = {}
-        if "Missing slice" in out:
-            symptoms["slices-1.3"] = "warning: " + "; ".join(l.strip() for l in out.splitlines()
-                                                             if "Missing slice" in l)
+        if SEVENZIP_WARNING.search(out):
+            problems.append("warnings: " + "; ".join(l.strip() for l in out.splitlines() if "WARNING" in l))
         issues = installer_issues(compiler, variant)
         # With a known issue the other checks of the installer would fail too.
-        if results.check_known("7z l %s" % tag, problems, symptoms, issues) and issues:
+        if results.check_known("7z l %s" % tag, problems, {}, issues) and issues:
             continue
         listed = {i.get("Path"): int(i["Size"]) if i.get("Size") else 0 for i in items}
 
@@ -1599,6 +1665,11 @@ def test_sevenzip(args, results, installers, expected, damaged, payload, env, en
 
 
 def main():
+    # Item paths have characters of any script (the codepage variant lists
+    # Cyrillic names). On Windows, Python writes to a pipe in the ANSI code
+    # page, which cannot encode them, so always write UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     exe = ".exe" if IS_WINDOWS else ""
     if IS_WINDOWS:
         default_build = os.path.join(BUILD_DIR, "x64", "Release")
@@ -1683,7 +1754,8 @@ def main():
     else:
         test_client(args, results, installers, expected, damaged, payload, env)
         if os.path.isfile(args.client) and os.path.isfile(args.plugin):
-            test_client_encryption(results, Client(args, env), encrypted, unsupported, payload)
+            test_client_encryption(results, Client(args, env), encrypted, payload)
+            test_client_unsupported(results, Client(args, env), unsupported)
             test_client_old(args, results, Client(args, env), old)
     test_sevenzip(args, results, installers, expected, damaged, payload, env, encrypted, unsupported, old)
     left = sorted(os.listdir(tmp))

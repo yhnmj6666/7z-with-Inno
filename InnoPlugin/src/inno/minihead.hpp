@@ -47,6 +47,11 @@
 #define INNOEXTRACT_HAVE_GMTIME_R 1
 #define INNOEXTRACT_HAVE_UTIMENSAT 1
 #define INNOEXTRACT_HAVE_AT_FDCWD 1
+// Code page conversion (util/encoding.cpp): iconv is part of glibc.
+#define INNOEXTRACT_HAVE_ICONV 1
+#else
+// Code page conversion (util/encoding.cpp): MultiByteToWideChar.
+#define INNOEXTRACT_HAVE_WIN32_CONV 1
 #endif
 
 #include <chrono>

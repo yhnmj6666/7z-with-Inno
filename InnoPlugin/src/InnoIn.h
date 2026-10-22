@@ -47,12 +47,19 @@ class CInArchive
   void ComputeSizes(const Byte *peHeaders, size_t peHeadersSize);
   void SetError(UInt32 flags, const std::string &message);
   HRESULT OpenSlices(IArchiveOpenCallback *callback);
+  // Loads the setup headers after Info.load_version, with the password for
+  // Encryption=full. Returns the error of the callback.
+  HRESULT LoadHeaders(std::istream &is, IArchiveOpenCallback *callback);
 
 public:
   CMyComPtr<IInStream> Stream;
   UInt64 FileSize;
   UInt64 PhySize;
   loader::offsets Offsets;
+  // The setup data version of the installer. For a version newer than all
+  // known ones, Info.version is the newest known version, whose format is
+  // used to read it.
+  setup::version Version;
   setup::info Info;
   std::vector<CItem> Items;
   std::vector<CExtraFile> Extras;

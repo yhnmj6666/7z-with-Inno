@@ -34,7 +34,11 @@ which starts with the Inno Setup constant of the destination folder, such as
 allowed in file names, so `{code:GetDestDir}` is extracted as
 `{code_GetDestDir}`. Unicode installers store names in UTF-16; for ANSI
 installers the plugin uses the code page of the installer's languages
-(Windows-1252 if one of them uses it), as innoextract does.
+(Windows-1252 if one of them uses it, otherwise that of the first language),
+as innoextract does. It converts them with the system's conversion functions
+(`MultiByteToWideChar` on Windows, iconv on Linux); a code page that the
+system cannot convert gives `_` for characters outside ASCII and the archive
+warning `Unknown data while converting from CP<n> to UTF-8.`.
 
 File names are never changed, so the files can be used right after
 extraction. Instead, entries get leading folders, in this order:
@@ -73,6 +77,9 @@ that the installer keeps in its setup headers:
 | `embedded\<language>.txt` or `.rtf` | the license of each language |
 | `embedded\WizardImage<N>.bmp`, `embedded\WizardImageSmall<N>.bmp` | the wizard images (`WizardImageFile`, `WizardSmallImageFile`), named `.png` for PNG images (Inno Setup 6.5.2 and later) |
 | `embedded\WizardImageBack<N>`, `embedded\WizardImageDark<N>`, `embedded\WizardImageSmallDark<N>`, `embedded\WizardImageBackDark<N>` | the background images (`WizardBackImageFile`, 6.7 and later) and the images for dark mode (`...DynamicDark`, 6.6 and later), with `.bmp` or `.png` as above |
+| `embedded\uninstall.exe` | Setup's uninstaller, which installers before Inno Setup 5.0 store as a file without a destination (innoextract skips it as an internal file) |
+| `embedded\regsvr.exe` | the helper that registers files with the `regserver` flag, stored the same way before Inno Setup 5.0 |
+| `embedded\<N>.bin` | any other file entry without a destination (`<N>` is its entry number), so that no item has an empty path |
 
 Modification times are the times Setup gives the installed files. Installers
 built with `TimeStampsInUTC=yes` (the default from Inno Setup 7) store UTC.
@@ -102,14 +109,21 @@ handlers; an installer that asks for more gives "Unsupported method" for its
 encrypted files, or with `Encryption=full` the error "Unsupported key
 derivation".
 
-Installers with a setup data version newer than the plugin knows open as an
-empty archive with the error "Unsupported Inno Setup version: <version>"
-instead of being declined, so 7-Zip does not show them as a plain `PE` file.
+Installers with a setup data version newer than the plugin knows (newer than
+`7.0.0.3`, Inno Setup 7.1.0) are read with the format of the newest known
+version, as innoextract does, with the archive warning "Unknown Inno Setup
+version <version>, read as 7.0.0.3"; the comment keeps the installer's
+version. Check the extracted files: a newer Inno Setup may have changed the
+format in a way that this does not detect. If the installer cannot be read
+that way (a checksum of the setup headers fails, or they cannot be parsed),
+it opens as an empty archive with the error "Unsupported Inno Setup version:
+<version>" instead of being declined, so 7-Zip does not show it as a plain
+`PE` file.
 
 Disk-spanning installers (`DiskSpanning=yes`) keep the file data in slice
 files next to the installer: `setup-1.bin`, `setup-2.bin`, ... for
 `setup.exe`, or `setup-1a.bin`, `setup-1b.bin`, ... with `SlicesPerDisk`
-greater than 1. The plugin opens them through 7-Zip's volume callback, as
+greater than 1 (`setup.1`, `setup.2`, ... before Inno Setup 2.0). The plugin opens them through 7-Zip's volume callback, as
 7-Zip does for the volumes of multi-volume archives, so open the installer,
 not a slice. Like Setup, it looks for the slices under the installer's file
 name without its extension, so a renamed installer (for example
@@ -192,13 +206,13 @@ Setup 6.4.1 to 7.1.0 (the newest is `7.0.0.3`) from the Inno Setup sources.
 
 | Inno Setup | Support | Tested with |
 |---|---|---|
-| 1.2.16 (16-bit), 1.3.26, 2.0.19, and every release from 3.0.0 to 5.6.1 (ANSI and Unicode) | supported, with the known limitations below | their own installers (all 124 old versions on https://files.jrsoftware.org/is/, each built with about its own version): list, test (every checksum) and extract, the same files as innoextract 1.9; every CI run |
-| 1.3.26, 2.0.19, 3.0.7, 4.0.8, 4.0.11, 4.1.5, 4.1.8, 4.2.7, 5.1.14, 5.2.3, 5.3.8 and 5.5.9 (both ANSI and Unicode) | supported | test corpus: the variants each version can compile (ZIP and disk spanning in all, BZIP2 and `none` from 2.0.19, solid from 4.0.8, LZMA and both timestamp variants from 4.1.5, `Encryption=yes` from 4.2.7, LZMA2 in 5.5.9), every CI run |
+| 1.2.16 (16-bit), 1.3.26, 2.0.19, and every release from 3.0.0 to 5.6.1 (ANSI and Unicode) | supported | their own installers (all 124 old versions on https://files.jrsoftware.org/is/, each built with about its own version): list, test (every checksum) and extract, the same files as innoextract 1.9; every CI run |
+| 1.3.26, 2.0.19, 3.0.7, 4.0.8, 4.0.11, 4.1.5, 4.1.8, 4.2.7, 5.1.14, 5.2.3, 5.3.8 and 5.5.9 (both ANSI and Unicode) | supported | test corpus: the variants each version can compile (ZIP and disk spanning in all, BZIP2 and `none` from 2.0.19, solid from 4.0.8, LZMA and both timestamp variants from 4.1.5, `Encryption=yes` and, in the ANSI versions, a language with code page 1251 from 4.2.7, LZMA2 in 5.5.9), every CI run |
 | 5.0.4 to 6.2.0 | supported | 15 real installers, checked by the owner with the MSVC and MinGW builds: every file has the same content as with the old plugin, and `7z t` passes |
-| 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2, 6.3.3, 6.4.3, 6.5.4, 6.6.1, 6.7.3, 7.0.2 (x64), 7.1.0 (x64 and x86) | supported | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`; timestamps in UTC and local time; disk spanning; `Encryption=yes`, and `Encryption=full` from 6.5, with the right, a wrong and no password), every CI run |
+| 5.6.1 (ANSI and Unicode), 6.0.5, 6.1.2, 6.2.2, 6.3.3, 6.4.3, 6.5.4, 6.6.1, 6.7.3, 7.0.2 (x64), 7.1.0 (x64 and x86) | supported | test corpus (`lzma` solid, `lzma2` non-solid, `zip` and `bzip` solid and non-solid, `none`; timestamps in UTC and local time; disk spanning; `Encryption=yes`, and `Encryption=full` from 6.5, with the right, a wrong and no password; for ANSI 5.6.1 a language with code page 1251), every CI run |
 | 1.2.10 to 1.2.15, 1.3.0 to 1.3.25, 2.0.0 to 2.0.18 | setup data formats from innoextract (16-bit and 32-bit) | not tested |
 | other versions up to 7.1.0 (setup data `7.0.0.3`) | supported | not tested |
-| newer setup data versions | opens with the error "Unsupported Inno Setup version" | test with a patched version string |
+| newer setup data versions | read with the format of `7.0.0.3`, with a warning; the error "Unsupported Inno Setup version" if that format does not fit | tests with patched version strings: a 7.1.0 installer as `9.9.9.9` lists, tests and extracts like the original; a 5.6.1 installer as `9.9.9` opens with the error |
 
 The encrypted corpus installers of Inno Setup before 6.4 are compiled with the
 official `ISCrypt.dll`, which `.github/scripts/setup-inno-tools.sh` downloads
@@ -207,22 +221,21 @@ and checks by its SHA-256; where it cannot be downloaded, with a stand-in
 
 ## Known limitations
 
-The tests show the first three as known issues (see
-[tests/README.md](tests/README.md#known-issues)).
-
-- Before Inno Setup 5.0 the uninstaller is stored as a file without a
-  destination. The plugin lists it with an empty path, so 7-Zip extracts it
-  under the name of the installer without its extension.
-- ANSI installers (Inno Setup up to 5.6.1 without `-unicode`) store text in
-  the code page of their languages. The plugin converts only Windows-1252
-  (and ISO-8859-1): in other code pages, characters outside ASCII become
-  `_`, and the archive reports `Unknown data while converting from CP<n> to
-  UTF-8.`. This affects the messages and license texts of such languages
-  and, when no language of the installer uses code page 1252, the file
-  names (for example an installer with only Russian or Chinese).
-- Disk-spanning installers of Inno Setup 1.3 name their slices `<name>.1`,
-  `<name>.2`, ... The plugin looks only for `<name>-1.bin`, ... (as
-  innoextract does), so their files in the slices are "Unavailable".
+- Installers with a setup data version newer than `7.0.0.3` are read with the
+  format of `7.0.0.3` (see above); if the format changed in a way that still
+  parses, the listing or the files may be wrong.
+- ANSI installers do not record the code page of their setup headers (such as
+  the `[Setup]` texts) and entries (such as file names). The plugin decodes
+  them with one code page for the whole installer, as innoextract does:
+  Windows-1252 if one of the installer's languages uses it, otherwise that of
+  the first language (see [Items](#items)). Text in another code page, such
+  as Cyrillic file names in an installer with English and Russian, gets
+  wrong characters. The texts of a language, its name in `[LangOptions]` of
+  `embedded\<language>.isl` and its custom messages in
+  `embedded\install_script.iss`, are converted with the code page of that
+  language. The compiled messages of each language, the `Data=` line of
+  `embedded\<language>.isl`, are copied as stored, in the code page of the
+  language, without conversion.
 - Slices of disk-spanning installers are looked up only under the names
   described above (so not for a renamed installer), in the installer's
   folder, with the exact case where the file system is case-sensitive. For an

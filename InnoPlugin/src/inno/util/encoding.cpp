@@ -598,23 +598,35 @@ void utf8_to_windows1252(const std::string & from, std::string & to) {
 
 #if INNOEXTRACT_HAVE_ICONV
 
-typedef boost::unordered_map<codepage_id, iconv_t> converter_map;
-converter_map converters;
+// The plugin keeps no global state: each conversion opens its own converter
+// (only strings with non-ASCII characters are converted).
+class iconv_converter {
+	iconv_t handle_;
+	iconv_converter(const iconv_converter &);
+	iconv_converter & operator=(const iconv_converter &);
+public:
+	explicit iconv_converter(iconv_t handle) : handle_(handle) { }
+	~iconv_converter() {
+		if(handle_ != iconv_t(-1)) {
+			iconv_close(handle_);
+		}
+	}
+	iconv_t get() const { return handle_; }
+};
 
 iconv_t get_converter(codepage_id codepage, bool reverse) {
 	
-	boost::uint32_t key = codepage | (reverse ? 0x80000000 : 0);
-	
-	// Try to reuse an existing converter if possible
-	converter_map::const_iterator i = converters.find(key);
-	if(i != converters.end()) {
-		return i->second;
-	}
-	
 	iconv_t handle = iconv_t(-1);
 	
+	// Windows code page 932 is Microsoft's Shift JIS (CP932 in glibc), as
+	// MultiByteToWideChar converts it: plain SHIFT-JIS turns '\' and '~' into
+	// the yen sign and the overline and lacks the NEC and IBM extensions.
+	if(codepage == cp_shift_jis) {
+		handle = reverse ? iconv_open("CP932", "UTF-8") : iconv_open("UTF-8", "CP932");
+	}
+	
 	const char * encoding = get_encoding_name(codepage);
-	if(encoding) {
+	if(encoding && handle == iconv_t(-1)) {
 		handle = reverse ? iconv_open(encoding, "UTF-8") : iconv_open("UTF-8", encoding);
 	}
 	
@@ -635,12 +647,13 @@ iconv_t get_converter(codepage_id codepage, bool reverse) {
 		log_warning << "Could not get codepage " << codepage << " -> UTF-8 converter.";
 	}
 	
-	return converters[key] = handle;
+	return handle;
 }
 
 bool utf8_iconv(const std::string & from, std::string & to, codepage_id codepage, bool reverse) {
 	
-	iconv_t converter = get_converter(codepage, reverse);
+	iconv_converter handle(get_converter(codepage, reverse));
+	iconv_t converter = handle.get();
 	if(converter == iconv_t(-1)) {
 		return false;
 	}

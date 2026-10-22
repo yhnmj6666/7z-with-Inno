@@ -31,7 +31,8 @@ The runner:
    encrypted variants (`ENCRYPTED_VARIANTS`: `encrypted.iss` with
    `Encryption=yes` from 4.2.7, `encrypted-full.iss` with `Encryption=full`
    from 6.5, password `inno-test-password`), with
-   `TZ=UTC`, into `build/corpus/installers/<compiler>/<variant>.exe`. The
+   `TZ=UTC`, into `build/corpus/installers/<compiler>/<variant>.exe`
+   (`codepage.iss`, `CODEPAGE_VARIANTS`, only with the ANSI compilers). The
    disk-spanning variant (`SPANNED_VARIANTS`: `spanned.iss`, with
    `DiskSliceSize` and the extra file `spanned/big.bin`) also writes the
    slices `spanned-1.bin`, `spanned-2.bin`, ... (`spanned.1`, ... before
@@ -94,26 +95,37 @@ The runner:
    `unavailable`.
 
    Then the encrypted installers: with the right password, `l` lists the
-   expected items (the files with data are encrypted, the archive method
-   names `ARC4` or `XChaCha20`) and `t` passes. With a wrong password, every
+   expected items (the files with data, including the uninstaller before
+   5.0, are encrypted, the archive method names `ARC4` or `XChaCha20`) and
+   `t` passes. With a wrong password, every
    file with data reports `wrong_password` and the others are `ok`; for
    `Encryption=full`, `l` lists no items and reports the
    `EncryptedHeadersError` flag. Without a password the client's callback
-   cancels (`E_ABORT`). A copy of the newest installer whose setup data
-   version is changed to `9.9.9.9` opens without items and with the error
-   "Unsupported Inno Setup version". Before 6.4, `Encryption=yes` needs
+   cancels (`E_ABORT`). Before 6.4, `Encryption=yes` needs
    `ISCrypt.dll` in the compiler folder; `.github/scripts/setup-inno-tools.sh`
    installs the official DLL, checked by its SHA-256, or a stand-in built from
    `iscrypt/iscrypt.c` when the download fails; without either, these
    installers are skipped.
 
-   Then the old installers: `l` (no archive error or warning, the physical
-   size), `t` (every item `ok`, every stored checksum verified), and `x`,
-   whose files must equal what innoextract extracts: for every destination
-   (the path without the leading folders for the same destination and
-   without innoextract's renaming) the same number of files with the same
-   contents, and leading folders only where innoextract renames too. Items
-   under `embedded\` are not compared.
+   Then two copies with an unknown newer setup data version (`UNSUPPORTED`,
+   written by `make_unsupported` to the work folder), each only when an
+   installer of its compilers is in the run (`lzma-solid` if there is one):
+   a `7.1.0-x64` or `7.1.0-x86` installer with `(7.0.0.3)` changed to
+   `(9.9.9.9)` must list the same items as the original, with the archive
+   warning `Unknown Inno Setup version 9.9.9.9, read as 7.0.0.3`, no error
+   and `9.9.9.9` in the comment, and pass `t`; a `5.6.1` installer with
+   `(5.5.7)` changed to `(9.9.9)`, which the newest format does not fit,
+   must open without items, with the error "Unsupported Inno Setup version:
+   9.9.9" and the `UnsupportedFeature` error flag.
+
+   Then the old installers: `l` (no archive error or warning, no item with an
+   empty path, `embedded\uninstall.exe` before 5.0, the physical size), `t`
+   (every item `ok`, every stored checksum verified), and `x`, whose files
+   must equal what innoextract extracts: for every destination (the path
+   without the leading folders for the same destination and without
+   innoextract's renaming) the same number of files with the same contents,
+   and leading folders only where innoextract renames too. Items under
+   `embedded\` are not compared.
 4. Windows 7-Zip, when a 7-Zip folder and a plugin DLL are given or found
    (default: `/opt/inno-tools/7zip-win64` and
    `build/mingw-x86_64/Inno.64.dll`): the runner copies `7z.exe`, `7z.dll`
@@ -127,8 +139,12 @@ The runner:
    `x` of `stored` extracts all files except `data/random.bin`. Executables
    that are not Inno installers still open with 7-Zip's own handlers:
    `7z.exe` lists as `PE`, and a 7z SFX (`7z.sfx` plus a `.7z` archive made
-   with `7zz`) lists as `7z`. The old installers: `l -slt`, `t` and `x`
-   (compared with innoextract, as above). On Linux, 7-Zip runs under Wine.
+   with `7zz`) lists as `7z`. The copies with a newer setup data version:
+   `9.9.9.9` lists the items of the original and prints the warning, without
+   errors, and `t` passes; `l` of `9.9.9` exits with code 2 and prints
+   "Unsupported Inno Setup version". The old installers: `l -slt` (no
+   warning, and no item named after the archive), `t` and `x` (compared with
+   innoextract, as above). On Linux, 7-Zip runs under Wine.
 5. Checks that the temporary folder of the programs it started is empty: the
    runner sets `TMP`, `TEMP` and `TMPDIR` to `tmp` in the work folder and
    removes `INNO_PLUGIN_LOG` from the environment (under Wine, 7-Zip keeps
@@ -137,7 +153,8 @@ The runner:
 
 Listings must contain every `[Files]` entry with the payload size, under the
 item path the handler gives it, and the `embedded\` items: the script, one
-`.isl` file per language, and optional wizard images; anything else fails.
+`.isl` file per language, optional wizard images, and Setup's uninstaller
+`embedded\uninstall.exe` before Inno Setup 5.0; anything else fails.
 Extracted files must match the payload byte for byte, and embedded files
 their listed sizes. The runner maps each item path (`{app}\docs\manual.txt`)
 back to its payload file by reading the scripts (see [Corpus](#corpus)), and
@@ -153,24 +170,19 @@ with `TZ=America/New_York`, and on Windows (and for 7-Zip under Wine) uses
 the system time zone.
 
 The runner prints one line per check (`PASS`, `FAIL`, `SKIP`, `XFAIL`) and a
-summary, and exits with 1 if any check failed.
+summary, in UTF-8 whatever the console code page, and exits with 1 if any
+check failed.
 
 ### Known issues
 
 `KNOWN_ISSUES` in `run_tests.py` lists the plugin problems that the tests
-show (see the Known limitations in `../README.md`). A check of an installer
-that has a known issue reports `XFAIL` while the problem shows; once it no
-longer shows, the check fails until the issue is removed from
-`KNOWN_ISSUES` and the README:
-
-| Issue | Installers | Symptom |
-|---|---|---|
-| `uninstaller` | old installers before 5.0 | the uninstaller is an item with an empty path (the client does not extract it, 7-Zip names it after the archive) |
-| `codepage` | ANSI old installers from 4.2.1 | `Unknown data while converting from CP<n> to UTF-8.` (archive warning) |
-| `slices-1.3` | `1.3.26/spanned` | `Missing slice: spanned-1.bin`; the other checks of this installer are skipped |
-
-The installers of the old compilers before 5.0 set `Uninstallable=no`, so
-they have no uninstaller item.
+show (see the Known limitations in `../README.md`); `installer_issues` and
+`old_issues` say which installers have them. A check of an installer that
+has a known issue reports `XFAIL` while the problem shows; once it no longer
+shows, the check fails until the issue is removed from `KNOWN_ISSUES` and
+the README. There are none at present: the three that the old versions
+showed (the uninstaller listed with an empty path, code pages other than
+1252, and the slice names of Inno Setup 1.3) are fixed.
 
 ### Options
 
@@ -209,9 +221,14 @@ Use the `Win32` build with 32-bit 7-Zip.
 `corpus/common.iss` holds the payload and the `[Files]` entries. The variant
 scripts cover solid LZMA, non-solid LZMA2, stored (`none`), and both solid and
 non-solid ZIP and BZIP2 compression. Each sets the compression options and
-includes `common.iss`; `spanned.iss` and `encrypted.iss` take the best method
-of the compiler from `compression.iss` (LZMA2, or LZMA or ZIP for old
-compilers). `time-utc.iss` and `time-local.iss` include `timestamps.iss`,
+includes `common.iss`; `spanned.iss`, `encrypted.iss` and `codepage.iss` take
+the best method of the compiler from `compression.iss` (LZMA2, or LZMA or ZIP
+for old compilers). `codepage.iss` has a single language with
+`LanguageCodePage=1251`, so the setup headers use code page 1251, and
+installs `latin1/`: the compiler stores the Windows-1252 bytes of those
+names (Wine's ANSI code page), so the expected item names are their meaning
+in code page 1251 (for example the byte 0xE9, e acute in Windows-1252, is
+listed as the Cyrillic short i). `time-utc.iss` and `time-local.iss` include `timestamps.iss`,
 which installs two files with fixed modification times (winter and summer)
 with `TimeStampsInUTC=yes` and `no`.
 
@@ -221,10 +238,11 @@ that the compiler lacks: `COMPRESSION` (before 2.0 only zlib, without the
 `Compression` directive), `COMPONENTS`, `RECURSE`, `SOLID`, `SLICES` (before
 4.0 disk spanning uses `DiskSize`), `CODE`, `LANGUAGES`, `UTC`, `LZMA`,
 `ROUNDING`, `GERMAN`, `ENCRYPTION`, `CHECK` (the `Check` functions for 64-bit
-installs and the `32bit` and `64bit` flags), `LZMA2` and `ARM64`. The
-scripts leave out or replace what the compiler cannot compile. In the plain
-script it adds to `[Setup]` the folders, `OutputBaseFilename`, `AppVerName`
-(required by the old versions), and before 5.0 `Uninstallable=no`.
+installs and the `32bit` and `64bit` flags), `CODEPAGE` (`[LangOptions]
+LanguageCodePage`), `LZMA2` and `ARM64`. The scripts leave out or replace
+what the compiler cannot compile. In the plain script it adds to `[Setup]`
+the folders, `OutputBaseFilename` and `AppVerName` (required by the old
+versions).
 
 The payload (`make_payload.py`) contains:
 

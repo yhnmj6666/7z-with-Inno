@@ -99,6 +99,7 @@ void CInArchive::Clear()
   FileSize = 0;
   PhySize = 0;
   Offsets = loader::offsets();
+  Version = setup::version();
   Info = setup::info();
   // Not set by the constructor; read by kpidHeadersSize.
   Info.header.header_size = 0;
@@ -212,10 +213,17 @@ HRESULT CInArchive::OpenChunkStream(const stream::chunk &chunk,
 
 // Name of a slice as in innoextract stream/slice.cpp: "setup-1.bin",
 // "setup-2.bin", ... or with several slices per disk "setup-1a.bin",
-// "setup-1b.bin", ...
-static UString GetSliceName(const UString &base, size_t slice, size_t slicesPerDisk)
+// "setup-1b.bin", ... Inno Setup 1.3 names them "setup.1", "setup.2", ...
+// (its Compile.pas: OutputBaseFilename + '.' + IntToStr(CurDisk)).
+static UString GetSliceName(const UString &base, size_t slice, size_t slicesPerDisk, bool before2)
 {
   UString name = base;
+  if (before2)
+  {
+    name.Add_Dot();
+    name.Add_UInt64(slice + 1);
+    return name;
+  }
   name.Add_Minus();
   if (slicesPerDisk <= 1)
     name.Add_UInt64(slice + 1);
@@ -282,14 +290,15 @@ HRESULT CInArchive::OpenSlices(IArchiveOpenCallback *callback)
   if (Info.version < INNO_VERSION(4, 1, 7) && !base2.IsEmpty())
     std::swap(base, base2);
 
+  const bool before2 = Info.version < INNO_VERSION(2, 0, 0);
   Slices.resize(numSlices);
   const size_t kMaxMissingWarnings = 8;
   size_t numMissing = 0;
   for (size_t i = 0; i < numSlices; i++)
   {
     UString names[2];
-    names[0] = base.IsEmpty() ? UString() : GetSliceName(base, i, slicesPerDisk);
-    names[1] = base2.IsEmpty() ? UString() : GetSliceName(base2, i, slicesPerDisk);
+    names[0] = base.IsEmpty() ? UString() : GetSliceName(base, i, slicesPerDisk, before2);
+    names[1] = base2.IsEmpty() ? UString() : GetSliceName(base2, i, slicesPerDisk, before2);
     for (unsigned k = 0; k < 2 && volumeCallback && !Slices[i].Stream; k++)
     {
       if (names[k].IsEmpty() || (k == 1 && names[1] == names[0]))
@@ -404,8 +413,10 @@ void CInArchive::BuildExtraFiles()
 
 /*
 Item names: files that have data in the installer keep their destination path
-("{app}\file.txt"), extra files are listed under "embedded\". File names are
-never changed. Leading folders separate files, in this order:
+("{app}\file.txt"), extra files are listed under "embedded\", and so are
+Setup's own files without a destination ("embedded\uninstall.exe",
+"embedded\regsvr.exe", "embedded\<entry>.bin"). File names are never
+changed. Leading folders separate files, in this order:
   "{x86}", "{x64}" or "{arm64}": the architecture of the Check parameter, or
       of the 32bit / 64bit flags if the Check parameter does not select one.
       If the files of any destination (the same ignoring case) differ in
@@ -644,6 +655,24 @@ static std::wstring GetPathKey(const UString &path)
   return key;
 }
 
+// Before Inno Setup 5.0, Setup stores its uninstaller (and the helper for
+// the regserver flag) as file entries without a destination. They and any
+// other entry without a destination are listed under embedded\, so that no
+// item has an empty path and "t" still checks their data.
+static bool IsInternalFile(const setup::file_entry &file)
+{
+  return file.type != setup::file_entry::UserFile || file.destination.empty();
+}
+
+static std::string GetInternalName(const setup::file_entry &file, size_t index)
+{
+  if (file.type == setup::file_entry::UninstExe)
+    return "uninstall.exe";
+  if (file.type == setup::file_entry::RegSvrExe)
+    return "regsvr.exe";
+  return std::to_string(index) + ".bin";
+}
+
 void CInArchive::BuildItems()
 {
   std::vector<size_t> files;
@@ -653,10 +682,15 @@ void CInArchive::BuildItems()
   const size_t numItems = files.size() + Extras.size();
 
   std::vector<UString> dests(numItems);
+  std::vector<bool> internal(files.size());
   for (size_t k = 0; k < numItems; k++)
   {
     if (k < files.size())
-      Utf8ToUnicode(Info.files[files[k]].destination, dests[k]);
+    {
+      const setup::file_entry &file = Info.files[files[k]];
+      internal[k] = IsInternalFile(file);
+      Utf8ToUnicode(internal[k] ? "embedded\\" + GetInternalName(file, files[k]) : file.destination, dests[k]);
+    }
     else
       Utf8ToUnicode("embedded\\" + Extras[k - files.size()].Name, dests[k]);
   }
@@ -664,14 +698,15 @@ void CInArchive::BuildItems()
   std::vector<std::string> archs(files.size());
   for (size_t k = 0; k < files.size(); k++)
   {
-    const char *arch = GetArchName(Info.files[files[k]]);
+    const char *arch = internal[k] ? NULL : GetArchName(Info.files[files[k]]);
     if (arch)
       archs[k] = arch;
   }
 
   std::map<std::wstring, std::vector<size_t> > groups;
   for (size_t k = 0; k < files.size(); k++)
-    groups[GetPathKey(dests[k])].push_back(k);
+    if (!internal[k])
+      groups[GetPathKey(dests[k])].push_back(k);
 
   bool useArch = false;
   for (std::map<std::wstring, std::vector<size_t> >::const_iterator it = groups.begin();
@@ -836,6 +871,39 @@ void CInArchive::ComputeSizes(const Byte *peHeaders, size_t peHeadersSize)
   PhySize = phySize;
 }
 
+// "9.9.9.9" for setup data version 9.9.9.9 (without the variant).
+static std::string GetVersionNumber(const setup::version &version)
+{
+  std::ostringstream oss;
+  oss << version.a() << '.' << version.b() << '.' << version.c();
+  if (version.d())
+    oss << '.' << version.d();
+  return oss.str();
+}
+
+HRESULT CInArchive::LoadHeaders(std::istream &is, IArchiveOpenCallback *callback)
+{
+  if (Info.encryption != setup::info::EncryptionFull)
+  {
+    Info.load_headers(is, setup::info::entry_types::all());
+    return S_OK;
+  }
+  // The setup headers are encrypted (Encryption=full, 6.5+).
+  if (!IsKdfSupported())
+  {
+    std::ostringstream oss;
+    oss << "Unsupported key derivation: " << GetKdfIterations() << " PBKDF2 iterations";
+    SetError(kpv_ErrorFlags_UnsupportedFeature, oss.str());
+    return S_OK;
+  }
+  RINOK(GetPassword(callback))
+  if (KeyDefined)
+    Info.load_headers(is, setup::info::entry_types::all(), 0, Key);
+  else
+    SetError(kpv_ErrorFlags_EncryptedHeadersError, std::string());
+  return S_OK;
+}
+
 HRESULT CInArchive::Open(IInStream *stream, IArchiveOpenCallback *callback)
 {
   Clear();
@@ -862,35 +930,51 @@ HRESULT CInArchive::Open(IInStream *stream, IArchiveOpenCallback *callback)
       is.clear();
       is.seekg((std::streamoff)Offsets.header_offset);
       Info.load_version(is);
+      Version = Info.version;
       if (Info.version.is_newer_than_known())
       {
-        std::ostringstream oss;
-        oss << "Unsupported Inno Setup version: " << Info.version;
-        SetError(kpv_ErrorFlags_UnsupportedFeature, oss.str());
-      }
-      else if (Info.encryption == setup::info::EncryptionFull)
-      {
-        // The setup headers are encrypted (Encryption=full, 6.5+).
-        if (!IsKdfSupported())
+        // Read with the format of the newest known version, as innoextract
+        // does. If that fails, the installer opens without items and with
+        // an error.
+        log_capture attempt;
+        try
         {
+          Info.use_newest_known_version(is);
+          callbackRes = LoadHeaders(is, callback);
+          attempt.flush();
           std::ostringstream oss;
-          oss << "Unsupported key derivation: " << GetKdfIterations() << " PBKDF2 iterations";
-          SetError(kpv_ErrorFlags_UnsupportedFeature, oss.str());
+          oss << "Unknown Inno Setup version " << GetVersionNumber(Version)
+              << ", read as " << GetVersionNumber(Info.version);
+          Warnings.push_back(oss.str());
         }
-        else
+        catch (const std::exception &e)
         {
-          callbackRes = GetPassword(callback);
-          if (callbackRes == S_OK)
-          {
-            if (KeyDefined)
-              Info.load_headers(is, setup::info::entry_types::all(), 0, Key);
-            else
-              SetError(kpv_ErrorFlags_EncryptedHeadersError, std::string());
-          }
+          attempt.restore();
+          // A read error or E_ABORT from the stream is reported as such.
+          if (streamBuf.GetError() != S_OK)
+            throw;
+          debug("cannot read as the newest known version: " << e.what());
+          Info = setup::info();
+          Info.header.header_size = 0;
+          Info.version = Version;
+          Key.clear();
+          KeyDefined = false;
+          ErrorFlags = 0;
+          ErrorMessage.clear();
+          Warnings.clear();
+          callbackRes = S_OK;
+          std::ostringstream oss;
+          oss << "Unsupported Inno Setup version: " << GetVersionNumber(Version);
+          SetError(kpv_ErrorFlags_UnsupportedFeature, oss.str());
         }
       }
       else
-        Info.load_headers(is, setup::info::entry_types::all());
+      {
+        callbackRes = LoadHeaders(is, callback);
+        // load_headers resolves ambiguous data versions (for example 5.5.7
+        // stands for 5.5.7 and 5.6.0) by the format that fits.
+        Version = Info.version;
+      }
       ok = (callbackRes == S_OK);
     }
     else
@@ -944,7 +1028,7 @@ HRESULT CInArchive::Open(IInStream *stream, IArchiveOpenCallback *callback)
   ComputeSizes(peHeaders, peSize);
 
   std::ostringstream comment;
-  comment << "InnoSetupVersion = " << Info.version << '\n';
+  comment << "InnoSetupVersion = " << Version << '\n';
   if (!Info.header.app_name.empty())
     comment << "AppName = " << Info.header.app_name << '\n';
   if (!Info.header.app_version.empty())

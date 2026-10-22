@@ -89,9 +89,13 @@ struct version {
 	
 	/*!
 	 * \return true for an unknown version that is newer than all known setup data versions.
-	 *         The format of such versions cannot be guessed.
+	 *         The format of such versions cannot be guessed; the plugin tries the format of
+	 *         \ref newest_known.
 	 */
 	bool is_newer_than_known() const;
+	
+	//! \return the newest known setup data version.
+	static version newest_known();
 	
 	operator version_constant() const {
 		return value;
