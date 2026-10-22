@@ -4,7 +4,7 @@
 // GetModuleProp) and lists, tests or extracts an installer. The output is one
 // JSON object per line, for tests/run_tests.py.
 //
-// Adapted from 7-Zip 26.04 CPP/7zip/UI/Client7z/Client7z.cpp (GNU LGPL, see
+// Adapted from 7-Zip 26.05 CPP/7zip/UI/Client7z/Client7z.cpp (GNU LGPL, see
 // THIRD-PARTY-NOTICES.md): archive creation removed; format lookup by name,
 // IArchiveOpenVolumeCallback, test mode, path checks and JSON output added.
 //

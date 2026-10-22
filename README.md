@@ -11,7 +11,7 @@ Inno Setup versions and the known limitations are described in
 
 | Path | Contents |
 |---|---|
-| [`InnoPlugin/`](InnoPlugin/) | the plugin: sources, CMake build, vendored 7-Zip 26.04 subset, tests |
+| [`InnoPlugin/`](InnoPlugin/) | the plugin: sources, CMake build, vendored 7-Zip 26.05 subset, tests |
 | [`.github/workflows/inno-plugin.yml`](.github/workflows/inno-plugin.yml) | CI: builds with GCC, MinGW and MSVC, tests under Wine and on Windows |
 | [`.github/`](.github/) | the environment and the brief of the GitHub Copilot cloud agent |
 

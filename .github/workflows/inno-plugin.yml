@@ -8,12 +8,12 @@ name: Inno plugin
 #            outdated installers are compiled
 #   build    GCC, MinGW x86_64 and MinGW i686 builds, DLL export and import checks
 #   client   the test client (GCC build) on the whole corpus
-#   wine     Windows 7-Zip 26.04 under Wine with the MinGW DLLs: 64-bit 7-Zip in
+#   wine     Windows 7-Zip 26.05 under Wine with the MinGW DLLs: 64-bit 7-Zip in
 #            groups of compilers and of old installers, 32-bit 7-Zip on a
 #            subset of the compilers
 #   windows  per architecture (x64, Win32) one job for the modern and one for
 #            the old Inno Setup versions: the MSVC build, DLL checks, the MSVC
-#            test client and the official 7-Zip 26.04 of the same architecture;
+#            test client and the official 7-Zip 26.05 of the same architecture;
 #            the job msvc-dlls then puts both DLLs into one artifact,
 #            inno-plugin-msvc
 on:
@@ -42,10 +42,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SEVENZIP_URL: https://github.com/ip7z/7zip/releases/download/26.04
-  # SHA-256 of the 7-Zip 26.04 release assets 7z2604-x64.exe and 7z2604.exe.
-  SEVENZIP_X64_SHA256: d54bf805f9f3704d1e8db2fa3498ae7ef2df0312b40b558e7c71c734430a665d
-  SEVENZIP_X86_SHA256: 39bf65045153fc26c42fa9fe47afd8cd1b11671c7f11d031e738c9a13960c009
+  SEVENZIP_URL: https://github.com/ip7z/7zip/releases/download/26.05
+  # SHA-256 of the 7-Zip 26.05 release assets 7z2605-x64.exe and 7z2605.exe.
+  SEVENZIP_X64_SHA256: fd99e86f57d8f429ef5ed045bf98315af962e2309b0f1ba87a147a44c71647d0
+  SEVENZIP_X86_SHA256: 6435a470fe7c4769962dbed8a60c641ee21401c833ced06077c80e33e7845a5e
 
 jobs:
   corpus:
@@ -259,12 +259,12 @@ jobs:
           name: inno-build-linux
           path: InnoPlugin/build
 
-      - name: Get the 32-bit 7-Zip 26.04
+      - name: Get the 32-bit 7-Zip 26.05
         if: matrix.arch == 'x86'
         run: |
-          curl -fsSL -o InnoPlugin/build/7z2604.exe "$SEVENZIP_URL/7z2604.exe"
-          echo "$SEVENZIP_X86_SHA256  InnoPlugin/build/7z2604.exe" | sha256sum -c -
-          7zz x -y -oInnoPlugin/build/7zip-x86 InnoPlugin/build/7z2604.exe > /dev/null
+          curl -fsSL -o InnoPlugin/build/7z2605.exe "$SEVENZIP_URL/7z2605.exe"
+          echo "$SEVENZIP_X86_SHA256  InnoPlugin/build/7z2605.exe" | sha256sum -c -
+          7zz x -y -oInnoPlugin/build/7zip-x86 InnoPlugin/build/7z2605.exe > /dev/null
 
       # One Wine server and one set of Wine services for all 7-Zip runs, instead
       # of starting and stopping them for every run (most of the time of a run).
@@ -301,10 +301,10 @@ jobs:
         include:
           - platform: x64
             bits: 64
-            sevenzip: 7z2604-x64.exe
+            sevenzip: 7z2605-x64.exe
           - platform: Win32
             bits: 32
-            sevenzip: 7z2604.exe
+            sevenzip: 7z2605.exe
     defaults:
       run:
         shell: bash
@@ -330,7 +330,7 @@ jobs:
       - name: Check DLL exports and imports (dumpbin; no VCRUNTIME, MSVCP or api-ms-win-crt)
         run: python InnoPlugin/tests/check_dll.py --dumpbin auto "$OUT/$DLL"
 
-      - name: Get the official ${{ matrix.bits }}-bit 7-Zip 26.04 (extracted, not installed)
+      - name: Get the official ${{ matrix.bits }}-bit 7-Zip 26.05 (extracted, not installed)
         run: |
           if [ "${{ matrix.bits }}" = 64 ]; then sha=$SEVENZIP_X64_SHA256; else sha=$SEVENZIP_X86_SHA256; fi
           curl -fsSL -o "InnoPlugin/build/${{ matrix.sevenzip }}" "$SEVENZIP_URL/${{ matrix.sevenzip }}"

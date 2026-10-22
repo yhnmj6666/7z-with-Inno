@@ -5,7 +5,7 @@ test and extract Inno Setup installers. 7-Zip loads it from its `Formats`
 folder, so 7-Zip updates do not require rebuilding the plugin.
 
 The plugin builds from this folder alone: the Inno Setup format code derived
-from innoextract, a vendored subset of 7-Zip 26.04 for the 7-Zip interfaces,
+from innoextract, a vendored subset of 7-Zip 26.05 for the 7-Zip interfaces,
 streams and decoders, and a CMake build for MSVC, GCC and MinGW. It replaces
 the older plugin that was built inside a 7-Zip 22.00 source tree in this
 repository's history (rewritten as described in
@@ -193,9 +193,9 @@ runs with a prebuilt corpus
 and a 7-Zip folder. See [tests/README.md](tests/README.md). The workflow
 `.github/workflows/inno-plugin.yml` compiles the corpus (cached between
 runs) and builds with GCC and MinGW, then tests in parallel jobs: the test
-client, Windows 7-Zip 26.04 under Wine in groups of compilers and of old
+client, Windows 7-Zip 26.05 under Wine in groups of compilers and of old
 installers (64-bit 7-Zip with all of them, 32-bit 7-Zip with a subset), and
-on Windows the MSVC x64 and Win32 builds, each with the official 7-Zip 26.04
+on Windows the MSVC x64 and Win32 builds, each with the official 7-Zip 26.05
 of the same architecture on the whole corpus.
 
 ## Supported Inno Setup versions
@@ -268,7 +268,7 @@ and checks by its SHA-256; where it cannot be downloaded, with a stand-in
 | `CMakeLists.txt`, `cmake/` | build definition, MinGW toolchain files |
 | `src/` | handler, data pipeline (`InnoDecoder.*`: chunks through 7-Zip streams and decoders) and 7-Zip glue |
 | `src/inno/` | Inno Setup format code derived from innoextract, and `minihead*` (stand-ins for the Boost parts it uses) |
-| `third_party/7zip/` | unmodified subset of 7-Zip 26.04, see `third_party/7zip/VERSION.txt` |
+| `third_party/7zip/` | unmodified subset of 7-Zip 26.05, see `third_party/7zip/VERSION.txt` |
 | `tests/` | test client, corpus scripts, payload generator, test runner, DLL check |
 
 ## License
