@@ -17,7 +17,7 @@ set -euo pipefail
 
 TOOLS=/opt/inno-tools
 SRC=/opt/src
-SEVENZIP_TAG=26.04
+SEVENZIP_TAG=26.05
 INNOEXTRACT_COMMIT=6e9e34ed0876014fdb46e684103ef8c3605e382e
 ISCRYPT_URLS=(https://jrsoftware.org/download.php/iscrypt.dll https://files.innosetup.nl/ISCrypt.dll)
 ISCRYPT_SHA256=2f6294f9aa09f59a574b5dcd33be54e16b39377984f3d5658cda44950fa0f8fc

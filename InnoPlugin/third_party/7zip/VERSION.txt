@@ -1,8 +1,8 @@
 7-Zip source subset used by the Inno plugin
 
 Upstream:  https://github.com/ip7z/7zip
-Tag:       26.04
-Commit:    9128b80e3a471108678e2b3ec3c985861c8d7b0f (2026-10-05)
+Tag:       26.05
+Commit:    b88c6bc09339de32f7d18bbab900686b244f42ba (2026-10-21)
 License:   DOC/License.txt (GNU LGPL 2.1 or later, with public-domain and
            BSD-licensed files; see ../../THIRD-PARTY-NOTICES.md) and
            DOC/copying.txt (full text of the GNU LGPL 2.1)
@@ -43,7 +43,12 @@ How to update
 3. Build with GCC, MinGW (x86_64 and i686) and MSVC (x64 and Win32); all of
    them treat warnings as errors. Add the files that new includes need (the
    unchanged upstream copies) and remove the files that are no longer used.
-4. Update the tag and commit above, and the version in ../../README.md and
-   ../../THIRD-PARTY-NOTICES.md.
+4. Update the tag and commit above, then replace the old version everywhere
+   else in the repository; "git grep -nF -e <old tag> -e <old tag without
+   the dot>" lists the places: the docs, tests/client/InnoClient.cpp,
+   SEVENZIP_TAG in .github/scripts/setup-inno-tools.sh, and in
+   .github/workflows/inno-plugin.yml the release URL and the names and SHA-256
+   of the Windows installers ("gh release view <tag> --repo ip7z/7zip
+   --json assets" lists the digests).
 5. Run tests/run_tests.py and the CI workflow (.github/workflows/inno-plugin.yml),
    which also tests with the official 7-Zip release.

@@ -5,7 +5,7 @@ contain code from the projects below.
 
 ## 7-Zip
 
-- Source: <https://github.com/ip7z/7zip>, tag 26.04 (commit `9128b80`).
+- Source: <https://github.com/ip7z/7zip>, tag 26.05 (commit `b88c6bc`).
 - Used in: `third_party/7zip/` (unmodified subset, see
   `third_party/7zip/VERSION.txt`), compiled into the plugin and the test
   client. `tests/client/InnoClient.cpp` is adapted from 7-Zip's
